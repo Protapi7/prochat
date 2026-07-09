@@ -1,0 +1,11 @@
+{
+  "name": "prochat-root",
+  "version": "1.0.0",
+  "description": "Monorepo root for Pro Chat deployment",
+  "scripts": {
+    "install-backend": "cd backend && npm install",
+    "build-frontend": "cd frontend && npm install && npm run build",
+    "build": "npm run build-frontend && npm run install-backend",
+    "start": "cd backend && npm start"
+  }
+}

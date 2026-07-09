@@ -1,0 +1,21 @@
+services:
+  # Monorepo Web Service running both frontend & backend
+  - type: web
+    name: prochat
+    env: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm run start
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: prochat-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+
+databases:
+  - name: prochat-db
+    plan: free
