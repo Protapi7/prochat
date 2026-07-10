@@ -17,8 +17,23 @@ async function initDb() {
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
     });
 
+    let client;
+    let retries = 5;
+    while (retries > 0) {
+      try {
+        client = await pool.connect();
+        break;
+      } catch (err) {
+        retries -= 1;
+        console.warn(`PostgreSQL connection failed. Retries remaining: ${retries}. Error: ${err.message}`);
+        if (retries === 0) {
+          throw err;
+        }
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
     try {
-      const client = await pool.connect();
       await client.query(`
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
@@ -44,7 +59,8 @@ async function initDb() {
         }
       };
     } catch (err) {
-      console.error("PostgreSQL database connection failed:", err);
+      console.error("PostgreSQL database initialization failed:", err);
+      if (client) client.release();
       throw err;
     }
   } else {
