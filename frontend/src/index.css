@@ -120,6 +120,42 @@ body {
   animation: pulseGlow 3s infinite ease-in-out;
 }
 
+.server-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0.45rem 1rem;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin: 0 auto;
+  transition: all 0.2s ease;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--glass-border);
+  max-width: 90%;
+  text-align: center;
+}
+
+.server-status-pill.online {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+
+.server-status-pill.offline {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
+.server-status-pill:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.25);
+}
+
 .auth-toggle-tabs {
   display: flex;
   background: rgba(0, 0, 0, 0.25);

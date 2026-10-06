@@ -12,6 +12,13 @@ export const getServerUrl = () => {
     return import.meta.env.VITE_BACKEND_URL.replace(/\/+$/, '');
   }
 
+  if (typeof window !== 'undefined' && window.location) {
+    const { hostname, port } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return `http://${hostname}:3001`;
+    }
+  }
+
   return window.location.origin;
 };
 

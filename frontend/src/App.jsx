@@ -39,6 +39,27 @@ function App() {
   const [authPhone, setAuthPhone] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [serverHealth, setServerHealth] = useState('checking'); // 'online' | 'offline' | 'checking'
+  const [activeServerHost, setActiveServerHost] = useState(() => getServerUrl());
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(getApiUrl('/api/health'), { signal: AbortSignal.timeout(3000) });
+        if (res.ok && isMounted) {
+          setServerHealth('online');
+        } else if (isMounted) {
+          setServerHealth('offline');
+        }
+      } catch (e) {
+        if (isMounted) setServerHealth('offline');
+      }
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 8000);
+    return () => { isMounted = false; clearInterval(interval); };
+  }, [activeServerHost]);
 
   const [activeChat, setActiveChat] = useState('');
   const [chats, setChats] = useState({}); // { [username]: [{ sender, text, timestamp }] }
@@ -345,7 +366,12 @@ function App() {
       }
     } catch (e) {
       console.error(e);
-      setAuthError('Connection error. Server may be offline or URL is incorrect.');
+      const host = getServerUrl();
+      if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+        setAuthError(`GitHub Pages only hosts static files. Click "Server Connection & Pairing" below to enter your live backend server URL (e.g. Render or your local PC IP).`);
+      } else {
+        setAuthError(`Cannot connect to host server at ${host}. Please ensure backend is running (port 3001).`);
+      }
     }
   };
 
@@ -598,6 +624,17 @@ function App() {
             <p>End-to-End Encrypted Private Messaging & Gemini AI</p>
           </div>
 
+          <div 
+            className={`server-status-pill ${serverHealth}`} 
+            onClick={() => setIsServerModalOpen(true)} 
+            title="Click to change or connect host server"
+          >
+            <span className={`status-dot ${serverHealth === 'online' ? 'online' : 'offline'}`}></span>
+            <span className="server-status-label">
+              {serverHealth === 'online' ? `Host Connected: ${activeServerHost}` : `⚠️ Server Offline / Not Connected (Click to Setup)`}
+            </span>
+          </div>
+
           {authError && (
             <div className="auth-error-banner">
               <AlertCircle size={16} />
@@ -712,6 +749,10 @@ function App() {
           isOpen={isServerModalOpen} 
           onClose={() => setIsServerModalOpen(false)} 
           userToken={token} 
+          onServerChanged={(newUrl) => {
+            setActiveServerHost(newUrl);
+            setAuthError('');
+          }}
         />
       </div>
     );
