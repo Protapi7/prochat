@@ -38,8 +38,11 @@ async function initDb() {
         CREATE TABLE IF NOT EXISTS users (
           id SERIAL PRIMARY KEY,
           username VARCHAR(255) UNIQUE NOT NULL,
+          email VARCHAR(255) UNIQUE,
+          phone VARCHAR(50) UNIQUE,
           password_hash TEXT NOT NULL,
-          public_key TEXT NOT NULL
+          public_key TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS offline_messages (
@@ -49,6 +52,10 @@ async function initDb() {
           encrypted_payload TEXT NOT NULL,
           timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255) UNIQUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(50) UNIQUE;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
       `);
       console.log('PostgreSQL database initialized.');
       client.release();
@@ -77,8 +84,11 @@ async function initDb() {
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT UNIQUE NOT NULL,
+          email TEXT UNIQUE,
+          phone TEXT UNIQUE,
           password_hash TEXT NOT NULL,
-          public_key TEXT NOT NULL
+          public_key TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS offline_messages (
@@ -126,5 +136,22 @@ async function initDb() {
   return dbInstance;
 }
 
-module.exports = { initDb, getPool: () => dbInstance };
+async function clearAllData() {
+  if (!dbInstance) return;
+  try {
+    if (isPostgres) {
+      await dbInstance.query('TRUNCATE offline_messages, users RESTART IDENTITY CASCADE;');
+    } else {
+      await dbInstance.query('DELETE FROM offline_messages;');
+      await dbInstance.query('DELETE FROM users;');
+    }
+    console.log('All database data cleared successfully.');
+    return true;
+  } catch (err) {
+    console.error('Failed to clear database data:', err);
+    throw err;
+  }
+}
+
+module.exports = { initDb, clearAllData, getPool: () => dbInstance };
 

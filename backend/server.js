@@ -6,7 +6,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { initDb } = require('./db');
+const { initDb, clearAllData } = require('./db');
 
 const app = express();
 app.use(cors());
@@ -68,32 +68,74 @@ app.get('/api/server-info', (req, res) => {
   });
 });
 
+// Clear Entire Database Endpoint
+app.post('/api/admin/clear-db', async (req, res) => {
+  try {
+    await clearAllData();
+    res.json({ success: true, message: 'All database data cleared successfully.' });
+  } catch (error) {
+    console.error('Clear database error:', error);
+    res.status(500).json({ error: 'Failed to clear database' });
+  }
+});
+
 app.post('/api/register', async (req, res) => {
   try {
-    const { username, password, publicKey } = req.body;
+    let { username, email, phone, password, publicKey } = req.body;
     if (!username || !password || !publicKey) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ error: 'Username, password and public key are required' });
+    }
+
+    username = username.trim();
+    email = email && email.trim() ? email.trim().toLowerCase() : null;
+    phone = phone && phone.trim() ? phone.trim().replace(/[\s-]/g, '') : null;
+
+    if (!email && !phone) {
+      return res.status(400).json({ error: 'Please provide either an Email ID or Mobile Number (or both)' });
+    }
+
+    // Check for existing duplicates
+    if (email) {
+      const existingEmail = await db.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+      if (existingEmail.rows.length > 0) {
+        return res.status(409).json({ error: 'This Email ID is already registered. Please log in.' });
+      }
+    }
+
+    if (phone) {
+      const existingPhone = await db.query('SELECT id FROM users WHERE phone = $1', [phone]);
+      if (existingPhone.rows.length > 0) {
+        return res.status(409).json({ error: 'This Mobile Number is already registered. Please log in.' });
+      }
+    }
+
+    const existingUser = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ error: 'This username is already taken. Please choose another.' });
     }
 
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(password, saltRounds);
 
     const result = await db.query(
-      'INSERT INTO users (username, password_hash, public_key) VALUES ($1, $2, $3) RETURNING id',
-      [username, passwordHash, publicKey]
+      'INSERT INTO users (username, email, phone, password_hash, public_key) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [username, email, phone, passwordHash, publicKey]
     );
 
-    const userId = result.rows[0].id;
+    const userId = result.rows[0].id || result.insertId;
     const token = jwt.sign({ userId, username }, JWT_SECRET, { expiresIn: '7d' });
     
     res.status(201).json({ 
       message: 'User registered successfully', 
       userId,
+      username,
+      email,
+      phone,
       token 
     });
   } catch (error) {
-    if (error.code === '23505') { // Postgres unique violation code
-      return res.status(409).json({ error: 'Username already exists' });
+    if (error.code === '23505' || (error.message && error.message.includes('UNIQUE constraint failed'))) {
+      return res.status(409).json({ error: 'User with this Username, Email or Mobile Number already exists.' });
     }
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -102,17 +144,30 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { identifier, username, password } = req.body;
+    const rawLoginKey = (identifier || username || '').trim();
+
+    if (!rawLoginKey || !password) {
+      return res.status(400).json({ error: 'Please enter your Mobile Number, Email ID, or Username and Password.' });
+    }
+
+    const normalizedKey = rawLoginKey.toLowerCase();
+    const phoneKey = rawLoginKey.replace(/[\s-]/g, '');
     
-    const result = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+    // Look up by Mobile Number, Email, or Username
+    const result = await db.query(
+      'SELECT * FROM users WHERE LOWER(username) = $1 OR (email IS NOT NULL AND LOWER(email) = $1) OR (phone IS NOT NULL AND phone = $2)',
+      [normalizedKey, phoneKey]
+    );
+
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Account not found. Check your Mobile Number, Email ID or Username.' });
     }
     const user = result.rows[0];
 
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ error: 'Incorrect password. Please try again.' });
     }
 
     const token = jwt.sign({ userId: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
@@ -120,6 +175,9 @@ app.post('/api/login', async (req, res) => {
     res.json({ 
       message: 'Login successful', 
       userId: user.id,
+      username: user.username,
+      email: user.email,
+      phone: user.phone,
       publicKey: user.public_key,
       token 
     });
@@ -131,7 +189,7 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/users/:username/key', async (req, res) => {
   try {
-    const result = await db.query('SELECT public_key FROM users WHERE username = $1', [req.params.username]);
+    const result = await db.query('SELECT public_key FROM users WHERE LOWER(username) = LOWER($1)', [req.params.username]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -143,12 +201,14 @@ app.get('/api/users/:username/key', async (req, res) => {
 
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
-    const result = await db.query('SELECT id, username, public_key FROM users');
+    const result = await db.query('SELECT id, username, email, phone, public_key FROM users');
     const usersList = result.rows
       .filter(u => u.username !== req.user.username)
       .map(u => ({
         id: u.id,
         username: u.username,
+        email: u.email,
+        phone: u.phone,
         publicKey: u.public_key,
         isOnline: connectedUsers.has(u.id) && connectedUsers.get(u.id).size > 0
       }));

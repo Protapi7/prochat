@@ -7,7 +7,8 @@ import {
 } from './crypto';
 import { 
   MessageSquare, Send, LogOut, Search, Lock, Unlock, User, RefreshCw, AlertTriangle,
-  Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone
+  Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone,
+  Mail, Phone, AlertCircle
 } from 'lucide-react';
 import { askGemini, getSmartReplies, summarizeChat, translateText, polishText } from './gemini';
 import ExtensionModal from './components/ExtensionModal';
@@ -27,11 +28,17 @@ const GEMINI_BOT_NAME = 'Gemini AI';
 function App() {
   const [token, setToken] = useState(() => getStorage('token'));
   const [username, setUsername] = useState(() => getStorage('username'));
+  const [userEmail, setUserEmail] = useState(() => getStorage('email'));
+  const [userPhone, setUserPhone] = useState(() => getStorage('phone'));
   const [privateKeyJwk, setPrivateKeyJwk] = useState(null);
   
   const [authMode, setAuthMode] = useState('login');
+  const [authIdentifier, setAuthIdentifier] = useState('');
   const [authUsername, setAuthUsername] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPhone, setAuthPhone] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
 
   const [activeChat, setActiveChat] = useState('');
   const [chats, setChats] = useState({}); // { [username]: [{ sender, text, timestamp }] }
@@ -241,8 +248,22 @@ function App() {
 
   const handleAuth = async (e) => {
     e.preventDefault();
+    setAuthError('');
     try {
       if (authMode === 'register') {
+        if (!authUsername.trim()) {
+          setAuthError('Please enter a username');
+          return;
+        }
+        if (!authEmail.trim() && !authPhone.trim()) {
+          setAuthError('Please enter either your Email ID or Mobile Number');
+          return;
+        }
+        if (!authPassword) {
+          setAuthError('Please enter a password');
+          return;
+        }
+
         const keyPair = await generateKeyPair();
         const pubKeyStr = await exportPublicKey(keyPair.publicKey);
         const privKeyJwk = await exportPrivateKey(keyPair.privateKey);
@@ -250,41 +271,59 @@ function App() {
         const res = await fetch(getApiUrl('/api/register'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: authUsername, password: authPassword, publicKey: pubKeyStr })
+          body: JSON.stringify({ 
+            username: authUsername.trim(), 
+            email: authEmail.trim() || undefined,
+            phone: authPhone.trim() || undefined,
+            password: authPassword, 
+            publicKey: pubKeyStr 
+          })
         });
         
+        const data = await res.json();
         if (res.ok) {
-          const data = await res.json();
           try {
             localStorage.setItem('token', data.token);
-            localStorage.setItem('username', authUsername);
-            localStorage.setItem(`privateKey_${authUsername}`, privKeyJwk);
+            localStorage.setItem('username', data.username);
+            if (data.email) localStorage.setItem('email', data.email);
+            if (data.phone) localStorage.setItem('phone', data.phone);
+            localStorage.setItem(`privateKey_${data.username}`, privKeyJwk);
           } catch(e) {}
           setToken(data.token);
-          setUsername(authUsername);
+          setUsername(data.username);
+          if (data.email) setUserEmail(data.email);
+          if (data.phone) setUserPhone(data.phone);
         } else {
-          alert('Registration failed. Username might exist.');
+          setAuthError(data.error || 'Registration failed.');
         }
       } else {
+        const queryIdentifier = (authIdentifier || authUsername).trim();
+        if (!queryIdentifier || !authPassword) {
+          setAuthError('Please enter your Mobile Number, Email ID or Username, and Password.');
+          return;
+        }
+
         const res = await fetch(getApiUrl('/api/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: authUsername, password: authPassword })
+          body: JSON.stringify({ identifier: queryIdentifier, password: authPassword })
         });
         
+        const data = await res.json();
         if (res.ok) {
-          const data = await res.json();
           try {
             localStorage.setItem('token', data.token);
-            localStorage.setItem('username', authUsername);
+            localStorage.setItem('username', data.username);
+            if (data.email) localStorage.setItem('email', data.email);
+            if (data.phone) localStorage.setItem('phone', data.phone);
 
             // Auto sync E2EE key for existing database user login on new browser/device
-            let privKeyJwk = localStorage.getItem(`privateKey_${authUsername}`);
+            let privKeyJwk = localStorage.getItem(`privateKey_${data.username}`);
             if (!privKeyJwk) {
               const keyPair = await generateKeyPair();
               const pubKeyStr = await exportPublicKey(keyPair.publicKey);
               privKeyJwk = await exportPrivateKey(keyPair.privateKey);
-              localStorage.setItem(`privateKey_${authUsername}`, privKeyJwk);
+              localStorage.setItem(`privateKey_${data.username}`, privKeyJwk);
               
               await fetch(getApiUrl('/api/users/update-key'), {
                 method: 'POST',
@@ -297,13 +336,16 @@ function App() {
             }
           } catch(e) {}
           setToken(data.token);
-          setUsername(authUsername);
+          setUsername(data.username);
+          if (data.email) setUserEmail(data.email);
+          if (data.phone) setUserPhone(data.phone);
         } else {
-          alert('Login failed. Invalid credentials.');
+          setAuthError(data.error || 'Login failed. Invalid credentials.');
         }
       }
     } catch (e) {
       console.error(e);
+      setAuthError('Connection error. Server may be offline or URL is incorrect.');
     }
   };
 
@@ -530,7 +572,9 @@ function App() {
     : users;
 
   const filteredUsers = allContacts.filter(u => 
-    u.username.toLowerCase().includes(searchQuery.toLowerCase())
+    u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (u.email && u.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
+    (u.phone && u.phone.includes(searchQuery))
   );
 
   const getChatPreview = (user) => {
@@ -553,33 +597,122 @@ function App() {
             <h1>Pro Chat E2EE</h1>
             <p>End-to-End Encrypted Private Messaging & Gemini AI</p>
           </div>
+
+          {authError && (
+            <div className="auth-error-banner">
+              <AlertCircle size={16} />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <div className="auth-toggle-tabs">
+            <button 
+              type="button" 
+              className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('login'); setAuthError(''); }}
+            >
+              Sign In
+            </button>
+            <button 
+              type="button" 
+              className={`auth-tab ${authMode === 'register' ? 'active' : ''}`}
+              onClick={() => { setAuthMode('register'); setAuthError(''); }}
+            >
+              New Account
+            </button>
+          </div>
+
           <form className="input-group" onSubmit={handleAuth}>
-            <div className="input-wrapper">
-              <User size={18} className="input-icon" />
-              <input 
-                type="text" 
-                placeholder="Username" 
-                value={authUsername} 
-                onChange={e => setAuthUsername(e.target.value)} 
-                required 
-              />
-            </div>
-            <div className="input-wrapper">
-              <Lock size={18} className="input-icon" />
-              <input 
-                type="password" 
-                placeholder="Password" 
-                value={authPassword} 
-                onChange={e => setAuthPassword(e.target.value)} 
-                required 
-              />
-            </div>
-            <button type="submit">{authMode === 'login' ? 'Login' : 'Register & Generate Keys'}</button>
+            {authMode === 'login' ? (
+              <>
+                <div className="input-wrapper">
+                  <User size={18} className="input-icon" />
+                  <input 
+                    type="text" 
+                    placeholder="Mobile Number / Email / Username" 
+                    value={authIdentifier} 
+                    onChange={e => setAuthIdentifier(e.target.value)} 
+                    required 
+                    autoComplete="username"
+                  />
+                </div>
+                <div className="input-wrapper">
+                  <Lock size={18} className="input-icon" />
+                  <input 
+                    type="password" 
+                    placeholder="Password" 
+                    value={authPassword} 
+                    onChange={e => setAuthPassword(e.target.value)} 
+                    required 
+                    autoComplete="current-password"
+                  />
+                </div>
+                <button type="submit">Sign In to ProChat</button>
+              </>
+            ) : (
+              <>
+                <div className="input-wrapper">
+                  <User size={18} className="input-icon" />
+                  <input 
+                    type="text" 
+                    placeholder="Username (e.g. alex)" 
+                    value={authUsername} 
+                    onChange={e => setAuthUsername(e.target.value)} 
+                    required 
+                  />
+                </div>
+                <div className="input-wrapper">
+                  <Mail size={18} className="input-icon" />
+                  <input 
+                    type="email" 
+                    placeholder="Email ID (e.g. alex@gmail.com)" 
+                    value={authEmail} 
+                    onChange={e => setAuthEmail(e.target.value)} 
+                    required 
+                  />
+                </div>
+                <div className="input-wrapper">
+                  <Phone size={18} className="input-icon" />
+                  <input 
+                    type="tel" 
+                    placeholder="Mobile Number (e.g. +91 9876543210)" 
+                    value={authPhone} 
+                    onChange={e => setAuthPhone(e.target.value)} 
+                    required 
+                  />
+                </div>
+                <div className="input-wrapper">
+                  <Lock size={18} className="input-icon" />
+                  <input 
+                    type="password" 
+                    placeholder="Create Strong Password" 
+                    value={authPassword} 
+                    onChange={e => setAuthPassword(e.target.value)} 
+                    required 
+                    autoComplete="new-password"
+                  />
+                </div>
+                <button type="submit">Register & Generate Keys</button>
+              </>
+            )}
           </form>
-          <p style={{textAlign: 'center', cursor: 'pointer', fontSize: '0.9rem', opacity: 0.8}} onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
-            {authMode === 'login' ? "Need an account? Register" : "Have an account? Login"}
+
+          <p style={{textAlign: 'center', cursor: 'pointer', fontSize: '0.9rem', opacity: 0.8, marginTop: '8px'}} 
+             onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}>
+            {authMode === 'login' ? "Don't have an account? Register with Mobile & Email" : "Already registered? Login with Mobile or Email"}
           </p>
+
+          <div className="auth-footer-help">
+            <button type="button" className="server-setup-link" onClick={() => setIsServerModalOpen(true)}>
+              <Server size={14} /> Server Connection & Pairing
+            </button>
+          </div>
         </div>
+        <ServerConnectModal 
+          isOpen={isServerModalOpen} 
+          onClose={() => setIsServerModalOpen(false)} 
+          userToken={token} 
+        />
       </div>
     );
   }
@@ -599,7 +732,7 @@ function App() {
               </div>
               <div className="profile-details">
                 <span className="profile-name">{username}</span>
-                <span className="profile-status">Online</span>
+                <span className="profile-status">{userPhone || userEmail || 'Online'}</span>
               </div>
             </div>
 
@@ -629,9 +762,13 @@ function App() {
                 try {
                   localStorage.removeItem('token');
                   localStorage.removeItem('username');
+                  localStorage.removeItem('email');
+                  localStorage.removeItem('phone');
                 } catch(e) {}
                 setToken(null);
                 setUsername(null);
+                setUserEmail(null);
+                setUserPhone(null);
                 setActiveChat('');
                 setChats({});
                 setUnreadCounts({});
@@ -673,6 +810,9 @@ function App() {
                       <span className="username-text">{u.username}</span>
                       {u.isAi && <span className="ai-badge">AI</span>}
                     </div>
+                    {(u.phone || u.email) && !u.isAi && (
+                      <span className="user-subdetail">{u.phone ? `📱 ${u.phone}` : `✉️ ${u.email}`}</span>
+                    )}
                     <span className="chat-preview">{getChatPreview(u)}</span>
                   </div>
                   {unreadCounts[u.username] > 0 && (
