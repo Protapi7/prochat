@@ -103,16 +103,19 @@ async function initDb() {
 
       dbInstance = {
         query: async (text, params = []) => {
-          let sqliteText = text;
-          // Replace $1, $2, etc. with ?
-          sqliteText = sqliteText.replace(/\$\d+/g, '?');
+          const expandedParams = [];
+          const sqliteText = text.replace(/\$(\d+)/g, (match, num) => {
+            const index = parseInt(num, 10) - 1;
+            expandedParams.push(params[index]);
+            return '?';
+          });
           
           try {
             if (sqliteText.trim().toUpperCase().startsWith('SELECT') || sqliteText.includes('RETURNING')) {
-              const rows = await sqliteDb.all(sqliteText, params);
+              const rows = await sqliteDb.all(sqliteText, expandedParams);
               return { rows };
             } else {
-              const result = await sqliteDb.run(sqliteText, params);
+              const result = await sqliteDb.run(sqliteText, expandedParams);
               return {
                 rows: [],
                 insertId: result.lastID,
