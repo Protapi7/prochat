@@ -8,6 +8,15 @@ window.onerror = function(msg, url, lineNo, columnNo, error) {
   return false;
 };
 
+// Register PWA Service Worker for Mobile (Android & iOS)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(err => {
+      console.log('PWA ServiceWorker registration failed: ', err);
+    });
+  });
+}
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <App />

@@ -47,6 +47,27 @@ initDb().then(pool => {
 
 // REST API Routes
 
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    server: 'ProChat Live Server'
+  });
+});
+
+app.get('/api/server-info', (req, res) => {
+  const localIp = getLocalIpAddress();
+  res.json({
+    status: 'online',
+    port: PORT,
+    localIp,
+    localUrl: `http://localhost:${PORT}`,
+    networkUrl: `http://${localIp}:${PORT}`,
+    uptime: process.uptime()
+  });
+});
+
 app.post('/api/register', async (req, res) => {
   try {
     const { username, password, publicKey } = req.body;
@@ -152,6 +173,36 @@ app.post('/api/users/update-key', authenticateToken, async (req, res) => {
   }
 });
 
+// Gemini Proxy Route
+app.post('/api/gemini/generate', authenticateToken, async (req, res) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Server Gemini API key is not configured. Please enter your free API key in ProChat Settings (⚙️).' });
+    }
+    const { prompt, contents, model = 'gemini-2.5-flash' } = req.body;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    
+    let payloadContents = contents || [{ parts: [{ text: prompt }] }];
+    const fetchRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: payloadContents })
+    });
+    
+    if (!fetchRes.ok) {
+      const errTxt = await fetchRes.text();
+      return res.status(fetchRes.status).json({ error: errTxt });
+    }
+    const data = await fetchRes.json();
+    const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+    res.json({ text });
+  } catch (error) {
+    console.error('Gemini proxy error:', error);
+    res.status(500).json({ error: 'Failed to communicate with Gemini API' });
+  }
+});
+
 
 // Socket.io Real-time Logic
 const connectedUsers = new Map(); // userId -> Set of socketIds
@@ -200,6 +251,34 @@ io.on('connection', async (socket) => {
   } catch (error) {
     console.error('Error fetching offline messages:', error);
   }
+
+  socket.on('typing_start', async ({ recipientUsername }) => {
+    try {
+      const recipientResult = await db.query('SELECT id FROM users WHERE username = $1', [recipientUsername]);
+      if (recipientResult.rows.length > 0) {
+        const recipientSockets = connectedUsers.get(recipientResult.rows[0].id);
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('user_typing', { username: socket.username, isTyping: true });
+          }
+        }
+      }
+    } catch (e) {}
+  });
+
+  socket.on('typing_stop', async ({ recipientUsername }) => {
+    try {
+      const recipientResult = await db.query('SELECT id FROM users WHERE username = $1', [recipientUsername]);
+      if (recipientResult.rows.length > 0) {
+        const recipientSockets = connectedUsers.get(recipientResult.rows[0].id);
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('user_typing', { username: socket.username, isTyping: false });
+          }
+        }
+      }
+    } catch (e) {}
+  });
 
   socket.on('private_message', async ({ recipientUsername, encryptedPayload }) => {
     try {
@@ -253,6 +332,28 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+const os = require('os');
+
+function getLocalIpAddress() {
+  const interfaces = os.networkInterfaces();
+  for (const devName in interfaces) {
+    const iface = interfaces[devName];
+    for (let i = 0; i < iface.length; i++) {
+      const alias = iface[i];
+      if (alias.family === 'IPv4' && !alias.internal) {
+        return alias.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  const localIp = getLocalIpAddress();
+  console.log(`\n==================================================`);
+  console.log(`🚀 ProChat Live Server is RUNNING!`);
+  console.log(`💻 Local URL:   http://localhost:${PORT}`);
+  console.log(`📱 Network URL: http://${localIp}:${PORT}`);
+  console.log(`==================================================\n`);
 });
+

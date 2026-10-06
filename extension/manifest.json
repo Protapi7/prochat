@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "ProChat - Encrypted Live Private Messenger",
+  "version": "1.0.0",
+  "description": "Instant 1-on-1 private messaging with end-to-end encryption and Gemini AI Assistant.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Open ProChat"
+  },
+  "permissions": [
+    "storage",
+    "notifications",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

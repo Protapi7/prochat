@@ -1,0 +1,19 @@
+{
+  "short_name": "ProChat",
+  "name": "ProChat - Encrypted Live Private Messenger",
+  "description": "Instant 1-on-1 private messaging with end-to-end encryption, auto host server connection, and Gemini AI.",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192 512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "./",
+  "background_color": "#0d0e15",
+  "theme_color": "#8b5cf6",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "categories": ["social", "productivity", "utilities"]
+}

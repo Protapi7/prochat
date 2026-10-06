@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ProChat Quick Access</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="header">
+      <div class="logo-title">
+        <span class="icon">🔐</span>
+        <h2>ProChat E2EE</h2>
+      </div>
+      <div class="status-badge" id="statusBadge">
+        <span class="status-dot checking" id="statusDot"></span>
+        <span id="statusText">Checking...</span>
+      </div>
+    </div>
+
+    <div class="body-content">
+      <p class="sub">End-to-End Encrypted Private Chat & Gemini AI Assistant</p>
+      
+      <div class="quick-actions">
+        <button id="openAppBtn" class="btn-primary">
+          💬 Launch ProChat Web App
+        </button>
+        <button id="geminiBtn" class="btn-secondary">
+          🤖 Chat with Gemini AI
+        </button>
+      </div>
+
+      <div class="server-config-box">
+        <h4>🌐 Server Address</h4>
+        <div class="input-group">
+          <input type="text" id="serverUrlInput" placeholder="http://192.168.1.X:3001" value="http://localhost:3001" />
+          <button id="saveServerBtn" class="btn-sm btn-save">Save</button>
+        </div>
+        <div class="server-actions">
+          <button id="testPingBtn" class="btn-sm btn-test">⚡ Test Connection</button>
+          <span id="pingResult" class="ping-result"></span>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <h4>📲 iOS / Remote Connection Tip</h4>
+        <p>On iOS devices, replace <code>localhost</code> with your host computer's Local Wi-Fi IP (e.g., <code>http://192.168.1.50:3001</code>) so the phone can reach the server on your network.</p>
+      </div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
