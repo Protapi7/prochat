@@ -203,14 +203,14 @@ app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const result = await db.query('SELECT id, username, email, phone, public_key FROM users');
     const usersList = result.rows
-      .filter(u => u.username !== req.user.username)
+      .filter(u => u.username.toLowerCase() !== req.user.username.toLowerCase())
       .map(u => ({
         id: u.id,
         username: u.username,
         email: u.email,
         phone: u.phone,
         publicKey: u.public_key,
-        isOnline: connectedUsers.has(u.id) && connectedUsers.get(u.id).size > 0
+        isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
       }));
     res.json(usersList);
   } catch (error) {
@@ -265,7 +265,7 @@ app.post('/api/gemini/generate', authenticateToken, async (req, res) => {
 
 
 // Socket.io Real-time Logic
-const connectedUsers = new Map(); // userId -> Set of socketIds
+const connectedUsers = new Map(); // string userId -> Set of socketIds
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -283,10 +283,11 @@ io.use((socket, next) => {
 io.on('connection', async (socket) => {
   console.log(`User connected: ${socket.username} (${socket.userId})`);
   
-  if (!connectedUsers.has(socket.userId)) {
-    connectedUsers.set(socket.userId, new Set());
+  const userKey = String(socket.userId);
+  if (!connectedUsers.has(userKey)) {
+    connectedUsers.set(userKey, new Set());
   }
-  connectedUsers.get(socket.userId).add(socket.id);
+  connectedUsers.get(userKey).add(socket.id);
 
   // Broadcast to all other clients that this user is now online
   socket.broadcast.emit('user_status_change', {
@@ -314,9 +315,10 @@ io.on('connection', async (socket) => {
 
   socket.on('typing_start', async ({ recipientUsername }) => {
     try {
-      const recipientResult = await db.query('SELECT id FROM users WHERE username = $1', [recipientUsername]);
+      if (!recipientUsername) return;
+      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
       if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(recipientResult.rows[0].id);
+        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('user_typing', { username: socket.username, isTyping: true });
@@ -328,9 +330,10 @@ io.on('connection', async (socket) => {
 
   socket.on('typing_stop', async ({ recipientUsername }) => {
     try {
-      const recipientResult = await db.query('SELECT id FROM users WHERE username = $1', [recipientUsername]);
+      if (!recipientUsername) return;
+      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
       if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(recipientResult.rows[0].id);
+        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('user_typing', { username: socket.username, isTyping: false });
@@ -342,12 +345,15 @@ io.on('connection', async (socket) => {
 
   socket.on('private_message', async ({ recipientUsername, encryptedPayload }) => {
     try {
-      const recipientResult = await db.query('SELECT id FROM users WHERE username = $1', [recipientUsername]);
+      if (!recipientUsername || !encryptedPayload) {
+        return socket.emit('chat_error', { message: 'Message payload is missing' });
+      }
+      const recipientResult = await db.query('SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
       if (recipientResult.rows.length === 0) {
-        return socket.emit('error', 'Recipient not found');
+        return socket.emit('chat_error', { message: `User "${recipientUsername}" was not found.` });
       }
       const recipient = recipientResult.rows[0];
-      const recipientSockets = connectedUsers.get(recipient.id);
+      const recipientSockets = connectedUsers.get(String(recipient.id));
       
       if (recipientSockets && recipientSockets.size > 0) {
         for (const socketId of recipientSockets) {
@@ -358,23 +364,26 @@ io.on('connection', async (socket) => {
           });
         }
       } else {
+        const payloadStr = typeof encryptedPayload === 'object' ? JSON.stringify(encryptedPayload) : encryptedPayload;
         await db.query(
           'INSERT INTO offline_messages (recipient_id, sender_id, encrypted_payload) VALUES ($1, $2, $3)',
-          [recipient.id, socket.userId, encryptedPayload]
+          [recipient.id, socket.userId, payloadStr]
         );
       }
     } catch (error) {
       console.error('Error routing message:', error);
+      socket.emit('chat_error', { message: 'Failed to deliver message' });
     }
   });
 
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.username}`);
-    const sockets = connectedUsers.get(socket.userId);
+    const userKey = String(socket.userId);
+    const sockets = connectedUsers.get(userKey);
     if (sockets) {
       sockets.delete(socket.id);
       if (sockets.size === 0) {
-        connectedUsers.delete(socket.userId);
+        connectedUsers.delete(userKey);
         // Broadcast to all clients that this user is offline
         io.emit('user_status_change', {
           userId: socket.userId,

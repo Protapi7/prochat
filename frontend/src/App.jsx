@@ -149,17 +149,27 @@ function App() {
 
   const handleReceiveMessage = async (data) => {
     try {
+      if (!data) return;
       const { senderUsername, encryptedPayload } = data;
-      const keyToUse = privateKeyJwkRef.current || getStorage(`privateKey_${usernameRef.current}`);
+      if (!senderUsername || !encryptedPayload) return;
+
+      const currentUserName = usernameRef.current || getStorage('username');
+      const keyToUse = privateKeyJwkRef.current || (currentUserName ? getStorage(`privateKey_${currentUserName}`) : null);
       if (!keyToUse) {
         console.warn("No private key available to decrypt message");
         return;
       }
-      const privateKey = await importPrivateKey(keyToUse);
       
-      const payloadObj = typeof encryptedPayload === 'string' ? JSON.parse(encryptedPayload) : encryptedPayload;
-      const sessionKey = await decryptSessionKey(privateKey, payloadObj.encryptedSessionKey);
-      const decryptedText = await decryptMessage(sessionKey, payloadObj.iv, payloadObj.ciphertext);
+      let decryptedText;
+      try {
+        const privateKey = await importPrivateKey(keyToUse);
+        const payloadObj = typeof encryptedPayload === 'string' ? JSON.parse(encryptedPayload) : encryptedPayload;
+        const sessionKey = await decryptSessionKey(privateKey, payloadObj.encryptedSessionKey);
+        decryptedText = await decryptMessage(sessionKey, payloadObj.iv, payloadObj.ciphertext);
+      } catch (decryptErr) {
+        console.warn("Failed to decrypt message:", decryptErr);
+        decryptedText = "🔒 [Encrypted message - could not decrypt. The encryption key on this device may be out of sync. Use ⚙️ Settings > Regenerate Keys]";
+      }
       
       const timestamp = data.timestamp || new Date().toISOString();
       
@@ -170,7 +180,9 @@ function App() {
           ...prev,
           [senderUsername]: newMsgs
         };
-        localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(newChats));
+        if (currentUserName) {
+          localStorage.setItem(`chats_${currentUserName}`, JSON.stringify(newChats));
+        }
         return newChats;
       });
 
@@ -181,30 +193,34 @@ function App() {
         }));
       }
     } catch (e) {
-      console.error("Failed to decrypt message", e);
+      console.error("Failed to handle received message", e);
     }
   };
 
   const handleOfflineMessages = async (msgs) => {
+    if (!Array.isArray(msgs)) return;
     for (const msg of msgs) {
-      const payload = JSON.parse(msg.encrypted_payload);
-      await handleReceiveMessage({ 
-        senderUsername: msg.sender_username, 
-        encryptedPayload: payload,
-        timestamp: msg.timestamp 
-      });
+      try {
+        const payload = typeof msg.encrypted_payload === 'string' ? JSON.parse(msg.encrypted_payload) : msg.encrypted_payload;
+        await handleReceiveMessage({ 
+          senderUsername: msg.sender_username, 
+          encryptedPayload: payload,
+          timestamp: msg.timestamp 
+        });
+      } catch (e) {}
     }
   };
 
   const handleUserStatusChange = (data) => {
+    if (!data || !data.username) return;
     setUsers(prevUsers => {
       const exists = prevUsers.some(u => u.username === data.username);
       if (!exists) {
-        return [...prevUsers, { id: data.userId, username: data.username, isOnline: data.isOnline }];
+        return [...prevUsers, { id: data.userId, username: data.username, isOnline: !!data.isOnline }];
       }
       return prevUsers.map(u => {
         if (u.username === data.username) {
-          return { ...u, isOnline: data.isOnline };
+          return { ...u, isOnline: !!data.isOnline };
         }
         return u;
       });
@@ -212,9 +228,10 @@ function App() {
   };
 
   const handleUserTyping = (data) => {
+    if (!data || !data.username) return;
     setTypingUsers(prev => ({
       ...prev,
-      [data.username]: data.isTyping
+      [data.username]: !!data.isTyping
     }));
   };
 
@@ -237,19 +254,30 @@ function App() {
       fetchUsers();
       connectSocket(token);
       
+      const onStatusChange = (data) => {
+        handleUserStatusChange(data);
+        fetchUsers();
+      };
+
+      const onChatError = (errData) => {
+        console.warn("Server chat error:", errData);
+        if (errData && errData.message) {
+          alert(`Chat Notice: ${errData.message}`);
+        }
+      };
+
       socket.on('receive_message', handleReceiveMessage);
       socket.on('offline_messages', handleOfflineMessages);
-      socket.on('user_status_change', () => {
-        handleUserStatusChange();
-        fetchUsers();
-      });
+      socket.on('user_status_change', onStatusChange);
       socket.on('user_typing', handleUserTyping);
+      socket.on('chat_error', onChatError);
       
       return () => {
-        socket.off('receive_message');
-        socket.off('offline_messages');
-        socket.off('user_status_change');
-        socket.off('user_typing');
+        socket.off('receive_message', handleReceiveMessage);
+        socket.off('offline_messages', handleOfflineMessages);
+        socket.off('user_status_change', onStatusChange);
+        socket.off('user_typing', handleUserTyping);
+        socket.off('chat_error', onChatError);
         disconnectSocket();
       };
     }
@@ -310,8 +338,11 @@ function App() {
             if (data.phone) localStorage.setItem('phone', data.phone);
             localStorage.setItem(`privateKey_${data.username}`, privKeyJwk);
           } catch(e) {}
+          setPrivateKeyJwk(privKeyJwk);
+          privateKeyJwkRef.current = privKeyJwk;
           setToken(data.token);
           setUsername(data.username);
+          usernameRef.current = data.username;
           if (data.email) setUserEmail(data.email);
           if (data.phone) setUserPhone(data.phone);
         } else {
@@ -332,6 +363,7 @@ function App() {
         
         const data = await res.json();
         if (res.ok) {
+          let privKeyJwk = null;
           try {
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
@@ -339,7 +371,7 @@ function App() {
             if (data.phone) localStorage.setItem('phone', data.phone);
 
             // Auto sync E2EE key for existing database user login on new browser/device
-            let privKeyJwk = localStorage.getItem(`privateKey_${data.username}`);
+            privKeyJwk = localStorage.getItem(`privateKey_${data.username}`);
             if (!privKeyJwk) {
               const keyPair = await generateKeyPair();
               const pubKeyStr = await exportPublicKey(keyPair.publicKey);
@@ -356,8 +388,13 @@ function App() {
               });
             }
           } catch(e) {}
+          if (privKeyJwk) {
+            setPrivateKeyJwk(privKeyJwk);
+            privateKeyJwkRef.current = privKeyJwk;
+          }
           setToken(data.token);
           setUsername(data.username);
+          usernameRef.current = data.username;
           if (data.email) setUserEmail(data.email);
           if (data.phone) setUserPhone(data.phone);
         } else {
@@ -474,13 +511,17 @@ function App() {
 
     // Standard E2EE 1-on-1 Message to Human User
     try {
-      const res = await fetch(getApiUrl(`/api/users/${activeChat}/key`));
+      const res = await fetch(getApiUrl(`/api/users/${encodeURIComponent(activeChat)}/key`));
       if (!res.ok) {
-        alert("User not found or missing public key");
+        alert(`Cannot send message: User "${activeChat}" not found or missing public encryption key.`);
         return;
       }
-      const { publicKey } = await res.json();
-      const recipientPubKey = await importPublicKey(publicKey);
+      const data = await res.json();
+      if (!data || !data.publicKey) {
+        alert(`User "${activeChat}" does not have an active public encryption key.`);
+        return;
+      }
+      const recipientPubKey = await importPublicKey(data.publicKey);
 
       const sessionKey = await generateSessionKey();
       const encryptedMessageData = await encryptMessage(sessionKey, textToSend);
@@ -512,6 +553,7 @@ function App() {
       setInputMessage('');
     } catch (err) {
       console.error("Error sending message", err);
+      alert("Failed to send message: " + (err.message || 'Encryption error'));
     }
   };
 
@@ -743,6 +785,9 @@ function App() {
             <button type="button" className="server-setup-link" onClick={() => setIsServerModalOpen(true)}>
               <Server size={14} /> Server Connection & Pairing
             </button>
+            <p style={{fontSize: '0.78rem', color: '#94a3b8', margin: '8px 0 0 0', textAlign: 'center'}}>
+              💡 Testing 2 accounts on the same computer? Open the second account in an <strong>Incognito / Private</strong> window.
+            </p>
           </div>
         </div>
         <ServerConnectModal 
