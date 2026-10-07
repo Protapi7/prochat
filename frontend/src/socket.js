@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 
-export const DEFAULT_CLOUD_BACKEND = 'https://prochat-protapi7.onrender.com';
+export const DEFAULT_CLOUD_BACKEND = 'https://prochat-te69.onrender.com';
 
 export const getServerUrl = () => {
   try {

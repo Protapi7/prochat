@@ -22,7 +22,7 @@ jobs:
             URL="${{ github.event.inputs.target_url }}"
           fi
           if [ -z "$URL" ]; then
-            URL="https://prochat-protapi7.onrender.com"
+            URL="https://prochat-te69.onrender.com"
           fi
           
           CLEAN_URL="${URL%/}"

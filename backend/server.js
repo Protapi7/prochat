@@ -416,8 +416,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`📱 Network URL: http://${localIp}:${PORT}`);
   console.log(`==================================================\n`);
 
-  // 24/7 Cloud Keep-Alive: Automatically pings /api/health every 12 mins to prevent free-tier sleep
-  const cloudUrl = process.env.RENDER_EXTERNAL_URL || process.env.SERVER_URL || process.env.KOYEB_PUBLIC_URL;
+  // 24/7 Cloud Keep-Alive: Automatically pings /api/health every 10 mins to prevent free-tier sleep
+  const cloudUrl = process.env.RENDER_EXTERNAL_URL || process.env.SERVER_URL || process.env.KOYEB_PUBLIC_URL || 'https://prochat-te69.onrender.com';
   if (cloudUrl) {
     console.log(`[Keep-Alive 24/7] Active for: ${cloudUrl}`);
     setInterval(async () => {
@@ -430,7 +430,7 @@ server.listen(PORT, '0.0.0.0', () => {
       } catch (err) {
         console.warn(`[Keep-Alive 24/7] Ping note:`, err.message);
       }
-    }, 12 * 60 * 1000);
+    }, 10 * 60 * 1000);
   }
 });
 
