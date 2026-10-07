@@ -48,13 +48,15 @@ export default function VoiceRecorder({ onSendVoiceNote, onCancel }) {
     }
   };
 
+  const [isViewOnce, setIsViewOnce] = useState(false);
+
   const handleSend = () => {
     if (!audioBlob) return;
     const reader = new FileReader();
     reader.readAsDataURL(audioBlob);
     reader.onloadend = () => {
       const base64Audio = reader.result;
-      onSendVoiceNote(`[Voice Note](${base64Audio})`);
+      onSendVoiceNote(`[Voice Note](${base64Audio})`, { isViewOnce });
     };
   };
 
@@ -86,10 +88,19 @@ export default function VoiceRecorder({ onSendVoiceNote, onCancel }) {
         <div className="audio-preview">
           <audio src={URL.createObjectURL(audioBlob)} controls className="preview-audio-player" />
           <div className="preview-actions">
+            <button 
+              type="button"
+              className={`view-once-toggle-btn ${isViewOnce ? 'active' : ''}`}
+              onClick={() => setIsViewOnce(!isViewOnce)}
+              title={isViewOnce ? "View Once Active: Disappears after playing" : "Tap to make View Once (Plays only once)"}
+            >
+              <span className="once-circle">①</span>
+              <span className="once-label">{isViewOnce ? 'Once ON' : 'Once'}</span>
+            </button>
             <button className="icon-btn cancel" onClick={() => setAudioBlob(null)} title="Discard">
               <Trash2 size={16} />
             </button>
-            <button className="icon-btn send" onClick={handleSend} title="Send Voice Note">
+            <button className="icon-btn send" onClick={handleSend} title={isViewOnce ? "Send View-Once Voice Note" : "Send Voice Note"}>
               <Send size={16} />
             </button>
           </div>

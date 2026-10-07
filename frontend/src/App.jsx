@@ -8,13 +8,18 @@ import {
 import { 
   MessageSquare, Send, LogOut, Search, Lock, Unlock, User, RefreshCw, AlertTriangle,
   Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone,
-  Mail, Phone, AlertCircle
+  Mail, Phone, AlertCircle, ArrowLeft, Clock, Paperclip, Image as ImageIcon, Video, Trash2, Eye, EyeOff, MoreVertical
 } from 'lucide-react';
 import { askGemini, getSmartReplies, summarizeChat, translateText, polishText } from './gemini';
 import ExtensionModal from './components/ExtensionModal';
 import SettingsModal from './components/SettingsModal';
 import ServerConnectModal from './components/ServerConnectModal';
 import VoiceRecorder from './components/VoiceRecorder';
+import MediaSendModal from './components/MediaSendModal';
+import ViewOnceModal from './components/ViewOnceModal';
+import DisappearingSettingsModal from './components/DisappearingSettingsModal';
+import DeleteMessageModal from './components/DeleteMessageModal';
+import { compressImage, readFileAsDataURL, formatDuration } from './utils/media';
 import './index.css';
 
 function getStorage(key) {
@@ -90,6 +95,22 @@ function App() {
   const [summaryText, setSummaryText] = useState('');
   const [showSummaryModal, setShowSummaryModal] = useState(false);
   const [targetLang, setTargetLang] = useState('English');
+
+  // Mobile View & Ephemeral States
+  const [mobileView, setMobileView] = useState('contacts'); // 'contacts' | 'chat'
+  const [isOnceTextMode, setIsOnceTextMode] = useState(false);
+  const [disappearingSettings, setDisappearingSettings] = useState(() => {
+    try {
+      const saved = localStorage.getItem('disappearing_settings');
+      return saved ? JSON.parse(saved) : {};
+    } catch (e) { return {}; }
+  });
+  const [isDisappearingModalOpen, setIsDisappearingModalOpen] = useState(false);
+  const [pendingMedia, setPendingMedia] = useState(null);
+  const [activeViewOnceMsg, setActiveViewOnceMsg] = useState(null);
+  const [deleteTargetMsg, setDeleteTargetMsg] = useState(null);
+  const [fullscreenImage, setFullscreenImage] = useState(null);
+  const fileInputRef = useRef(null);
 
   const activeChatRef = useRef(activeChat);
   const privateKeyJwkRef = useRef(privateKeyJwk);
@@ -172,10 +193,40 @@ function App() {
       }
       
       const timestamp = data.timestamp || new Date().toISOString();
+
+      let msgItem = null;
+      try {
+        const parsed = JSON.parse(decryptedText);
+        if (parsed && typeof parsed === 'object' && parsed.id) {
+          msgItem = {
+            ...parsed,
+            sender: senderUsername,
+            timestamp: parsed.timestamp || timestamp
+          };
+        }
+      } catch (e) {}
+
+      if (!msgItem) {
+        const isVoice = typeof decryptedText === 'string' && decryptedText.startsWith('[Voice Note](');
+        msgItem = {
+          id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+          sender: senderUsername,
+          text: decryptedText,
+          type: isVoice ? 'voice' : 'text',
+          mediaUrl: isVoice ? decryptedText.substring(13, decryptedText.length - 1) : null,
+          isViewOnce: false,
+          timestamp
+        };
+      }
+
+      // If this message has a disappearing TTL and recipient doesn't have expiresAt set yet
+      if (msgItem.disappearingTtl && !msgItem.expiresAt) {
+        msgItem.expiresAt = Date.now() + (msgItem.disappearingTtl * 1000);
+      }
       
       setChats(prev => {
         const userMsgs = prev[senderUsername] || [];
-        const newMsgs = [...userMsgs, { sender: senderUsername, text: decryptedText, timestamp }];
+        const newMsgs = [...userMsgs, msgItem];
         const newChats = {
           ...prev,
           [senderUsername]: newMsgs
@@ -235,6 +286,31 @@ function App() {
     }));
   };
 
+  // Disappearing messages auto-expiry interval
+  useEffect(() => {
+    const purgeInterval = setInterval(() => {
+      const now = Date.now();
+      setChats(prev => {
+        let changed = false;
+        const updated = { ...prev };
+        for (const user in updated) {
+          const original = updated[user] || [];
+          const filtered = original.filter(m => !m.expiresAt || m.expiresAt > now);
+          if (filtered.length !== original.length) {
+            updated[user] = filtered;
+            changed = true;
+          }
+        }
+        if (changed && usernameRef.current) {
+          localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(updated));
+          return updated;
+        }
+        return prev;
+      });
+    }, 1000);
+    return () => clearInterval(purgeInterval);
+  }, []);
+
   useEffect(() => {
     if (token) {
       const fetchUsers = async () => {
@@ -266,11 +342,69 @@ function App() {
         }
       };
 
+      const onMessageDeleted = (delData) => {
+        if (!delData || !delData.messageId) return;
+        setChats(prev => {
+          const sender = delData.senderUsername;
+          const userMsgs = prev[sender] || [];
+          const updatedMsgs = userMsgs.map(m => {
+            if (m.id === delData.messageId) {
+              return { ...m, isDeleted: true, text: '🚫 This message was deleted', mediaUrl: null };
+            }
+            return m;
+          });
+          const newChats = { ...prev, [sender]: updatedMsgs };
+          if (usernameRef.current) localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(newChats));
+          return newChats;
+        });
+      };
+
+      const onDisappearingUpdated = (dispData) => {
+        if (!dispData || !dispData.senderUsername) return;
+        setDisappearingSettings(prev => {
+          const updated = { ...prev, [dispData.senderUsername]: dispData.durationSeconds };
+          try { localStorage.setItem('disappearing_settings', JSON.stringify(updated)); } catch (e) {}
+          return updated;
+        });
+        const notice = dispData.durationSeconds > 0 
+          ? `⏱️ ${dispData.senderUsername} set disappearing messages to ${formatDuration(dispData.durationSeconds)}` 
+          : `⏱️ ${dispData.senderUsername} turned off disappearing messages`;
+        setChats(prev => {
+          const userMsgs = prev[dispData.senderUsername] || [];
+          const newChats = {
+            ...prev,
+            [dispData.senderUsername]: [...userMsgs, { id: 'sys_' + Date.now(), sender: 'system', text: notice, timestamp: new Date().toISOString() }]
+          };
+          if (usernameRef.current) localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(newChats));
+          return newChats;
+        });
+      };
+
+      const onViewOnceExpired = (expData) => {
+        if (!expData || !expData.messageId) return;
+        setChats(prev => {
+          const recipient = expData.senderUsername;
+          const userMsgs = prev[recipient] || [];
+          const updatedMsgs = userMsgs.map(m => {
+            if (m.id === expData.messageId) {
+              return { ...m, viewOnceState: 'expired', text: '① Opened', mediaUrl: null };
+            }
+            return m;
+          });
+          const newChats = { ...prev, [recipient]: updatedMsgs };
+          if (usernameRef.current) localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(newChats));
+          return newChats;
+        });
+      };
+
       socket.on('receive_message', handleReceiveMessage);
       socket.on('offline_messages', handleOfflineMessages);
       socket.on('user_status_change', onStatusChange);
       socket.on('user_typing', handleUserTyping);
       socket.on('chat_error', onChatError);
+      socket.on('message_deleted', onMessageDeleted);
+      socket.on('disappearing_setting_updated', onDisappearingUpdated);
+      socket.on('view_once_expired', onViewOnceExpired);
       
       return () => {
         socket.off('receive_message', handleReceiveMessage);
@@ -278,6 +412,9 @@ function App() {
         socket.off('user_status_change', onStatusChange);
         socket.off('user_typing', handleUserTyping);
         socket.off('chat_error', onChatError);
+        socket.off('message_deleted', onMessageDeleted);
+        socket.off('disappearing_setting_updated', onDisappearingUpdated);
+        socket.off('view_once_expired', onViewOnceExpired);
         disconnectSocket();
       };
     }
@@ -511,6 +648,43 @@ function App() {
 
     // Standard E2EE 1-on-1 Message to Human User
     try {
+      const activeTtl = disappearingSettings[activeChat] || 0;
+      const expiresAt = activeTtl > 0 ? Date.now() + (activeTtl * 1000) : null;
+      const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+
+      let msgPayloadObj = null;
+      if (typeof msgPayload === 'object' && msgPayload !== null) {
+        msgPayloadObj = {
+          id: messageId,
+          sender: username,
+          text: msgPayload.text || '',
+          type: msgPayload.type || 'text',
+          mediaUrl: msgPayload.mediaUrl || null,
+          caption: msgPayload.caption || null,
+          isViewOnce: !!(msgPayload.isViewOnce || options.isViewOnce),
+          viewOnceState: 'unopened',
+          expiresAt,
+          disappearingTtl: activeTtl > 0 ? activeTtl : null,
+          timestamp: new Date().toISOString()
+        };
+      } else {
+        const isVoice = typeof textToSend === 'string' && textToSend.startsWith('[Voice Note](');
+        const isViewOnce = !!(options.isViewOnce || isOnceTextMode);
+        msgPayloadObj = {
+          id: messageId,
+          sender: username,
+          text: isVoice ? '[Voice Note]' : textToSend,
+          type: isVoice ? 'voice' : 'text',
+          mediaUrl: isVoice ? textToSend.substring(13, textToSend.length - 1) : null,
+          caption: null,
+          isViewOnce,
+          viewOnceState: 'unopened',
+          expiresAt,
+          disappearingTtl: activeTtl > 0 ? activeTtl : null,
+          timestamp: new Date().toISOString()
+        };
+      }
+
       const res = await fetch(getApiUrl(`/api/users/${encodeURIComponent(activeChat)}/key`));
       if (!res.ok) {
         alert(`Cannot send message: User "${activeChat}" not found or missing public encryption key.`);
@@ -524,7 +698,8 @@ function App() {
       const recipientPubKey = await importPublicKey(data.publicKey);
 
       const sessionKey = await generateSessionKey();
-      const encryptedMessageData = await encryptMessage(sessionKey, textToSend);
+      const stringifiedPayload = JSON.stringify(msgPayloadObj);
+      const encryptedMessageData = await encryptMessage(sessionKey, stringifiedPayload);
       const encryptedSessionKeyArray = await encryptSessionKey(recipientPubKey, sessionKey);
 
       const encryptedPayload = {
@@ -539,10 +714,9 @@ function App() {
       });
       socket.emit('typing_stop', { recipientUsername: activeChat });
 
-      const timestamp = new Date().toISOString();
       setChats(prev => {
         const userMsgs = prev[activeChat] || [];
-        const newMsgs = [...userMsgs, { sender: username, text: textToSend, timestamp }];
+        const newMsgs = [...userMsgs, msgPayloadObj];
         const newChats = {
           ...prev,
           [activeChat]: newMsgs
@@ -551,6 +725,7 @@ function App() {
         return newChats;
       });
       setInputMessage('');
+      setIsOnceTextMode(false);
     } catch (err) {
       console.error("Error sending message", err);
       alert("Failed to send message: " + (err.message || 'Encryption error'));
@@ -597,6 +772,117 @@ function App() {
     }
   };
 
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      if (file.type.startsWith('image/')) {
+        const compressedDataUrl = await compressImage(file, 1280, 0.75);
+        setPendingMedia({
+          dataUrl: compressedDataUrl,
+          type: file.type,
+          name: file.name
+        });
+      } else if (file.type.startsWith('video/')) {
+        if (file.size > 20 * 1024 * 1024) {
+          alert("Video size must be under 20MB for fast encrypted delivery.");
+          return;
+        }
+        const videoDataUrl = await readFileAsDataURL(file);
+        setPendingMedia({
+          dataUrl: videoDataUrl,
+          type: file.type,
+          name: file.name
+        });
+      } else {
+        alert("Please select an image or video file.");
+      }
+    } catch (err) {
+      console.error("Error processing media file:", err);
+      alert("Failed to load media: " + err.message);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleSendMedia = ({ mediaUrl, mediaType, caption, isViewOnce }) => {
+    handleSendMessage({
+      type: mediaType,
+      mediaUrl,
+      caption,
+      text: caption || (isViewOnce ? `① View Once ${mediaType}` : `[${mediaType === 'video' ? 'Video' : 'Photo'}]`),
+      isViewOnce
+    });
+    setPendingMedia(null);
+  };
+
+  const handleViewOnceOpen = (msg) => {
+    if (msg.viewOnceState === 'expired') return;
+    setActiveViewOnceMsg(msg);
+  };
+
+  const handleViewOnceExpire = (messageId) => {
+    if (!activeChat || !messageId) return;
+    socket.emit('view_once_opened', { recipientUsername: activeChat, messageId });
+    setChats(prev => {
+      const msgs = (prev[activeChat] || []).map(m => {
+        if (m.id === messageId) {
+          return { ...m, viewOnceState: 'expired', text: '① Opened • Expired', mediaUrl: null };
+        }
+        return m;
+      });
+      const updated = { ...prev, [activeChat]: msgs };
+      if (usernameRef.current) localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(updated));
+      return updated;
+    });
+    setActiveViewOnceMsg(null);
+  };
+
+  const executeDeleteMessage = (msg, deleteForEveryone = false) => {
+    if (!activeChat || !msg) return;
+    if (deleteForEveryone && msg.sender === username) {
+      socket.emit('delete_message', {
+        recipientUsername: activeChat,
+        messageId: msg.id,
+        deleteForEveryone: true
+      });
+      setChats(prev => {
+        const msgs = (prev[activeChat] || []).map(m => m.id === msg.id ? { ...m, isDeleted: true, text: '🚫 This message was deleted', mediaUrl: null } : m);
+        const updated = { ...prev, [activeChat]: msgs };
+        localStorage.setItem(`chats_${username}`, JSON.stringify(updated));
+        return updated;
+      });
+    } else {
+      setChats(prev => {
+        const msgs = (prev[activeChat] || []).filter(m => m.id !== msg.id);
+        const updated = { ...prev, [activeChat]: msgs };
+        localStorage.setItem(`chats_${username}`, JSON.stringify(updated));
+        return updated;
+      });
+    }
+    setDeleteTargetMsg(null);
+  };
+
+  const updateDisappearingDuration = (seconds) => {
+    if (!activeChat) return;
+    const updated = { ...disappearingSettings, [activeChat]: seconds };
+    setDisappearingSettings(updated);
+    try { localStorage.setItem('disappearing_settings', JSON.stringify(updated)); } catch (e) {}
+    socket.emit('disappearing_setting', { recipientUsername: activeChat, durationSeconds: seconds });
+    const noticeText = seconds > 0 
+      ? `⏱️ You set disappearing messages to ${formatDuration(seconds)}` 
+      : `⏱️ You turned off disappearing messages`;
+    setChats(prev => {
+      const userMsgs = prev[activeChat] || [];
+      const newChats = {
+        ...prev,
+        [activeChat]: [...userMsgs, { id: 'sys_' + Date.now(), sender: 'system', text: noticeText, timestamp: new Date().toISOString() }]
+      };
+      if (usernameRef.current) localStorage.setItem(`chats_${usernameRef.current}`, JSON.stringify(newChats));
+      return newChats;
+    });
+  };
+
   const handleDownloadChromeExtension = () => {
     const readmeContent = `ProChat Chrome Extension Package
 ===================================
@@ -616,6 +902,7 @@ function App() {
 
   const selectChat = (chatUser) => {
     setActiveChat(chatUser);
+    setMobileView('chat');
     setUnreadCounts(prev => ({
       ...prev,
       [chatUser]: 0
@@ -808,7 +1095,7 @@ function App() {
 
   return (
     <div className="app-container">
-      <div className="chat-layout">
+      <div className={`chat-layout ${mobileView === 'contacts' ? 'mobile-contacts' : 'mobile-chat'}`}>
         {/* Sidebar */}
         <div className="glass-panel sidebar">
           <div className="sidebar-header">
@@ -918,6 +1205,16 @@ function App() {
             <>
               <div className="chat-header">
                 <div className="chat-header-info">
+                  {/* Mobile Back Button to return to contacts list */}
+                  <button 
+                    type="button" 
+                    className="mobile-back-btn" 
+                    onClick={() => setMobileView('contacts')}
+                    title="Back to contacts"
+                  >
+                    <ArrowLeft size={22} />
+                  </button>
+
                   <div className={`avatar-placeholder ${activeUser?.isAi ? 'ai-avatar' : ''}`}>
                     {activeUser?.isAi ? <Bot size={20} /> : activeChat.substring(0, 2).toUpperCase()}
                   </div>
@@ -937,8 +1234,20 @@ function App() {
                   </div>
                 </div>
 
-                {/* AI Toolbar & Security Badges */}
+                {/* AI Toolbar & Security Badges & Disappearing Messages Setting */}
                 <div className="header-tools">
+                  {!activeUser?.isAi && (
+                    <button 
+                      type="button" 
+                      className={`tool-btn disappearing-btn ${disappearingSettings[activeChat] ? 'active-timer' : ''}`}
+                      onClick={() => setIsDisappearingModalOpen(true)}
+                      title="Disappearing Messages Timer"
+                    >
+                      <Clock size={15} />
+                      <span>{disappearingSettings[activeChat] ? formatDuration(disappearingSettings[activeChat]) : 'Timer'}</span>
+                    </button>
+                  )}
+
                   {extensions.gemini && currentChatMessages.length > 0 && (
                     <>
                       <button className="tool-btn" title="Summarize 1-on-1 Chat" onClick={handleSummarizeChat}>
@@ -995,20 +1304,159 @@ function App() {
                   </div>
                 ) : (
                   currentChatMessages.map((m, i) => {
-                    const isVoiceNote = typeof m.text === 'string' && m.text.startsWith('[Voice Note](');
-                    const audioSrc = isVoiceNote ? m.text.substring(13, m.text.length - 1) : null;
+                    // System notice message (e.g. disappearing timer changed)
+                    if (m.sender === 'system') {
+                      return (
+                        <div key={m.id || i} className="system-notice-bubble">
+                          {m.text}
+                        </div>
+                      );
+                    }
+
+                    // Deleted message
+                    if (m.isDeleted) {
+                      return (
+                        <div key={m.id || i} className={`message-bubble ${m.sender === username ? 'sent' : 'received'} deleted`}>
+                          <div className="message-text">🚫 This message was deleted</div>
+                          <div className="message-time">{formatTime(m.timestamp)}</div>
+                        </div>
+                      );
+                    }
+
+                    // View Once Ephemeral Message (Photo, Video, Voice, Text)
+                    if (m.isViewOnce) {
+                      const isExpired = m.viewOnceState === 'expired';
+                      const isSender = m.sender === username;
+
+                      return (
+                        <div key={m.id || i} className={`message-bubble ${isSender ? 'sent' : 'received'}`}>
+                          <div className="message-bubble-header">
+                            <span className="message-sender-name">{m.sender}</span>
+                            <button 
+                              type="button" 
+                              className="message-options-btn" 
+                              onClick={() => setDeleteTargetMsg(m)}
+                              title="Delete message"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+
+                          {isExpired ? (
+                            <div className="view-once-card expired">
+                              <div className="view-once-icon-box"><span className="once-circle">①</span></div>
+                              <div className="view-once-info">
+                                <span className="view-once-title">
+                                  {m.type === 'video' ? 'Video' : m.type === 'image' ? 'Photo' : m.type === 'voice' ? 'Voice note' : 'Message'} opened
+                                </span>
+                                <span className="view-once-sub">Expired</span>
+                              </div>
+                            </div>
+                          ) : isSender ? (
+                            <div className="view-once-card sender-view">
+                              <div className="view-once-icon-box"><span className="once-circle">①</span></div>
+                              <div className="view-once-info">
+                                <span className="view-once-title">
+                                  View Once {m.type === 'video' ? 'Video' : m.type === 'image' ? 'Photo' : m.type === 'voice' ? 'Voice note' : 'Text'}
+                                </span>
+                                <span className="view-once-sub">
+                                  {m.caption || (m.type === 'text' ? m.text : 'Sent (Unopened)')}
+                                </span>
+                              </div>
+                            </div>
+                          ) : m.type === 'voice' ? (
+                            <div className="view-once-card unopened" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                                <div className="view-once-icon-box"><span className="once-circle">①</span></div>
+                                <div className="view-once-info">
+                                  <span className="view-once-title">View-Once Voice Note</span>
+                                  <span className="view-once-sub">Plays only once</span>
+                                </div>
+                              </div>
+                              {m.mediaUrl && (
+                                <audio 
+                                  src={m.mediaUrl} 
+                                  controls 
+                                  className="message-audio-player" 
+                                  onEnded={() => handleViewOnceExpire(m.id)}
+                                />
+                              )}
+                            </div>
+                          ) : (
+                            <div className="view-once-card unopened" onClick={() => handleViewOnceOpen(m)}>
+                              <div className="view-once-icon-box"><span className="once-circle">①</span></div>
+                              <div className="view-once-info">
+                                <span className="view-once-title">
+                                  View Once {m.type === 'video' ? 'Video' : m.type === 'image' ? 'Photo' : 'Text'}
+                                </span>
+                                <span className="view-once-sub">Tap to view</span>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="message-time">
+                            {formatTime(m.timestamp)}
+                            {m.expiresAt && <span className="disappearing-badge"><Clock size={11} /></span>}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    // Standard messages (Photo, Video, Voice note, or Text)
+                    const isVoiceNote = m.type === 'voice' || (typeof m.text === 'string' && m.text.startsWith('[Voice Note]('));
+                    const audioSrc = m.mediaUrl || (isVoiceNote && typeof m.text === 'string' && m.text.startsWith('[Voice Note](') ? m.text.substring(13, m.text.length - 1) : null);
 
                     return (
-                      <div key={i} className={`message-bubble ${m.sender === username ? 'sent' : 'received'} ${m.sender === GEMINI_BOT_NAME ? 'ai-bubble' : ''}`}>
-                        <div className="message-sender-name">{m.sender}</div>
-                        <div className="message-text">
-                          {isVoiceNote ? (
-                            <audio src={audioSrc} controls className="message-audio-player" />
-                          ) : (
-                            m.text
+                      <div key={m.id || i} className={`message-bubble ${m.sender === username ? 'sent' : 'received'} ${m.sender === GEMINI_BOT_NAME ? 'ai-bubble' : ''}`}>
+                        <div className="message-bubble-header">
+                          <span className="message-sender-name">{m.sender}</span>
+                          {m.sender !== GEMINI_BOT_NAME && (
+                            <button 
+                              type="button" 
+                              className="message-options-btn" 
+                              onClick={() => setDeleteTargetMsg(m)}
+                              title="Delete message"
+                            >
+                              <Trash2 size={13} />
+                            </button>
                           )}
                         </div>
-                        <div className="message-time">{formatTime(m.timestamp)}</div>
+
+                        {/* Photo Attachment */}
+                        {m.type === 'image' && m.mediaUrl && (
+                          <div className="chat-media-wrapper">
+                            <img 
+                              src={m.mediaUrl} 
+                              alt="Photo" 
+                              className="chat-media-img" 
+                              onClick={() => setFullscreenImage(m.mediaUrl)} 
+                            />
+                            {m.caption && <p className="media-caption-text">{m.caption}</p>}
+                          </div>
+                        )}
+
+                        {/* Video Attachment */}
+                        {m.type === 'video' && m.mediaUrl && (
+                          <div className="chat-media-wrapper">
+                            <video src={m.mediaUrl} controls playsInline className="chat-media-video" />
+                            {m.caption && <p className="media-caption-text">{m.caption}</p>}
+                          </div>
+                        )}
+
+                        {/* Audio Voice Note */}
+                        {isVoiceNote && audioSrc && (
+                          <audio src={audioSrc} controls className="message-audio-player" />
+                        )}
+
+                        {/* Plain Text Content */}
+                        {!m.mediaUrl && m.type !== 'image' && m.type !== 'video' && !isVoiceNote && (
+                          <div className="message-text">{m.text}</div>
+                        )}
+
+                        <div className="message-time">
+                          {formatTime(m.timestamp)}
+                          {m.expiresAt && <span className="disappearing-badge"><Clock size={11} /></span>}
+                        </div>
                       </div>
                     );
                   })
@@ -1042,8 +1490,8 @@ function App() {
               {/* Voice Recorder Bar */}
               {showVoiceRecorder && (
                 <VoiceRecorder 
-                  onSendVoiceNote={(voiceText) => {
-                    handleSendMessage(voiceText);
+                  onSendVoiceNote={(voiceText, opts) => {
+                    handleSendMessage(voiceText, opts);
                     setShowVoiceRecorder(false);
                   }}
                   onCancel={() => setShowVoiceRecorder(false)}
@@ -1052,6 +1500,23 @@ function App() {
 
               {/* Chat Input Bar */}
               <form className="chat-input" onSubmit={onSubmitForm}>
+                {/* Media Attachment (Photo & Video) */}
+                <button 
+                  type="button" 
+                  className="attach-btn" 
+                  onClick={() => fileInputRef.current?.click()} 
+                  title="Attach Photo or Video"
+                >
+                  <Paperclip size={18} />
+                </button>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  accept="image/*,video/*" 
+                  onChange={handleFileSelect} 
+                  style={{ display: 'none' }} 
+                />
+
                 {extensions.voicenotes && (
                   <button 
                     type="button" 
@@ -1079,14 +1544,32 @@ function App() {
                   placeholder={
                     activeUser?.isAi 
                       ? "Ask Gemini AI anything..." 
-                      : "Type an encrypted message (or /gemini prompt)..."
+                      : isOnceTextMode 
+                        ? "Type a View-Once encrypted text message..."
+                        : "Type an encrypted message (or /gemini prompt)..."
                   } 
                   value={inputMessage}
                   onChange={handleInputChange}
                   disabled={!privateKeyJwk && !activeUser?.isAi}
                 />
 
-                <button type="submit" disabled={(!privateKeyJwk && !activeUser?.isAi) || !inputMessage.trim()}>
+                {/* View-Once Text Toggle Button before sending */}
+                {!activeUser?.isAi && (
+                  <button
+                    type="button"
+                    className={`view-once-text-toggle ${isOnceTextMode ? 'active' : ''}`}
+                    onClick={() => setIsOnceTextMode(!isOnceTextMode)}
+                    title={isOnceTextMode ? "View Once Active: Receiver can view only once" : "Send as View Once (Direct send vs Once option)"}
+                  >
+                    <span className="once-badge">①</span>
+                  </button>
+                )}
+
+                <button 
+                  type="submit" 
+                  disabled={(!privateKeyJwk && !activeUser?.isAi) || !inputMessage.trim()}
+                  title={isOnceTextMode ? "Send View-Once Message" : "Direct Send"}
+                >
                   <Send size={18} />
                 </button>
               </form>
@@ -1107,6 +1590,59 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* Media Send & Preview Modal (Photo / Video with View Once option) */}
+      <MediaSendModal 
+        isOpen={!!pendingMedia}
+        fileData={pendingMedia?.dataUrl}
+        fileType={pendingMedia?.type || ''}
+        fileName={pendingMedia?.name || ''}
+        onClose={() => setPendingMedia(null)}
+        onSendMedia={handleSendMedia}
+      />
+
+      {/* View Once Ephemeral Viewer Modal */}
+      <ViewOnceModal 
+        isOpen={!!activeViewOnceMsg}
+        message={activeViewOnceMsg}
+        onClose={() => setActiveViewOnceMsg(null)}
+        onExpire={handleViewOnceExpire}
+      />
+
+      {/* Disappearing Messages Settings Modal */}
+      <DisappearingSettingsModal 
+        isOpen={isDisappearingModalOpen}
+        onClose={() => setIsDisappearingModalOpen(false)}
+        currentSeconds={disappearingSettings[activeChat] || 0}
+        onSelectDuration={updateDisappearingDuration}
+        contactName={activeChat}
+      />
+
+      {/* Delete Message Confirmation Modal */}
+      <DeleteMessageModal 
+        isOpen={!!deleteTargetMsg}
+        message={deleteTargetMsg}
+        isSender={deleteTargetMsg?.sender === username}
+        onClose={() => setDeleteTargetMsg(null)}
+        onDeleteForMe={(msg) => executeDeleteMessage(msg, false)}
+        onDeleteForEveryone={(msg) => executeDeleteMessage(msg, true)}
+      />
+
+      {/* Fullscreen Regular Image Viewer Modal */}
+      {fullscreenImage && (
+        <div className="modal-overlay" onClick={() => setFullscreenImage(null)}>
+          <div style={{ maxWidth: '90vw', maxHeight: '90vh', position: 'relative' }} onClick={e => e.stopPropagation()}>
+            <img src={fullscreenImage} alt="Fullscreen" style={{ maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain', borderRadius: '12px' }} />
+            <button 
+              type="button" 
+              onClick={() => setFullscreenImage(null)}
+              style={{ position: 'absolute', top: '10px', right: '10px', background: 'rgba(0,0,0,0.6)', border: 'none', color: '#fff', width: '36px', height: '36px', borderRadius: '50%', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Extension Hub Modal */}
       <ExtensionModal 

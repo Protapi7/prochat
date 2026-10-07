@@ -376,6 +376,65 @@ io.on('connection', async (socket) => {
     }
   });
 
+  socket.on('delete_message', async ({ recipientUsername, messageId, deleteForEveryone }) => {
+    try {
+      if (!recipientUsername || !messageId) return;
+      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
+      if (recipientResult.rows.length > 0) {
+        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('message_deleted', {
+              senderUsername: socket.username,
+              messageId,
+              deleteForEveryone: !!deleteForEveryone
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error in delete_message event:', e);
+    }
+  });
+
+  socket.on('disappearing_setting', async ({ recipientUsername, durationSeconds }) => {
+    try {
+      if (!recipientUsername) return;
+      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
+      if (recipientResult.rows.length > 0) {
+        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('disappearing_setting_updated', {
+              senderUsername: socket.username,
+              durationSeconds
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error in disappearing_setting event:', e);
+    }
+  });
+
+  socket.on('view_once_opened', async ({ recipientUsername, messageId }) => {
+    try {
+      if (!recipientUsername || !messageId) return;
+      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
+      if (recipientResult.rows.length > 0) {
+        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('view_once_expired', {
+              senderUsername: socket.username,
+              messageId
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  });
+
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.username}`);
     const userKey = String(socket.userId);
