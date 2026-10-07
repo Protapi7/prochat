@@ -181,6 +181,15 @@ export default function ServerConnectModal({ isOpen, onClose, userToken, onServe
           <div className="preset-buttons">
             <button
               type="button"
+              className="preset-btn Highlight"
+              onClick={() => { setInputUrl(`https://prochat-protapi7.onrender.com`); }}
+              title="Connect to 24/7 Cloud Host on Render"
+            >
+              ☁️ Render Cloud (24/7)
+            </button>
+
+            <button
+              type="button"
               className="preset-btn"
               onClick={() => { setInputUrl(`http://localhost:3001`); }}
             >
@@ -190,7 +199,7 @@ export default function ServerConnectModal({ isOpen, onClose, userToken, onServe
             {serverInfo?.localIp && (
               <button
                 type="button"
-                className="preset-btn Highlight"
+                className="preset-btn"
                 onClick={() => { setInputUrl(`http://${serverInfo.localIp}:3001`); }}
               >
                 Local Network ({serverInfo.localIp})
@@ -204,8 +213,22 @@ export default function ServerConnectModal({ isOpen, onClose, userToken, onServe
               disabled={autoDetecting}
             >
               <RefreshCw size={14} className={autoDetecting ? 'spin' : ''} />
-              Auto Detect Server
+              Auto Detect
             </button>
+          </div>
+
+          <div className="cloud-deploy-banner" style={{marginTop: '16px', padding: '12px', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid rgba(139, 92, 246, 0.25)', borderRadius: '12px', textAlign: 'center'}}>
+            <p style={{fontSize: '0.85rem', color: '#c4b5fd', margin: '0 0 8px 0'}}>
+              ✨ <strong>100% Free 24/7 Cloud Hosting:</strong> Deploy your server with 1 click on Render (Zero PC required).
+            </p>
+            <a 
+              href="https://render.com/deploy?repo=https://github.com/Protapi7/prochat" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              style={{display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', padding: '6px 14px', background: 'var(--accent-gradient)', color: '#fff', borderRadius: '8px', textDecoration: 'none', fontWeight: 600}}
+            >
+              🚀 Launch 24/7 Cloud Backend on Render
+            </a>
           </div>
         </form>
       </div>

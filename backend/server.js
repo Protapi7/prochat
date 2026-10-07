@@ -415,5 +415,22 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`💻 Local URL:   http://localhost:${PORT}`);
   console.log(`📱 Network URL: http://${localIp}:${PORT}`);
   console.log(`==================================================\n`);
+
+  // 24/7 Cloud Keep-Alive: Automatically pings /api/health every 12 mins to prevent free-tier sleep
+  const cloudUrl = process.env.RENDER_EXTERNAL_URL || process.env.SERVER_URL || process.env.KOYEB_PUBLIC_URL;
+  if (cloudUrl) {
+    console.log(`[Keep-Alive 24/7] Active for: ${cloudUrl}`);
+    setInterval(async () => {
+      try {
+        const pingTarget = `${cloudUrl.replace(/\/+$/, '')}/api/health`;
+        const res = await fetch(pingTarget);
+        if (res.ok) {
+          console.log(`[Keep-Alive 24/7] Self-ping OK at ${new Date().toLocaleTimeString()}`);
+        }
+      } catch (err) {
+        console.warn(`[Keep-Alive 24/7] Ping note:`, err.message);
+      }
+    }, 12 * 60 * 1000);
+  }
 });
 

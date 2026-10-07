@@ -1,0 +1,36 @@
+name: 24/7 Cloud Keep-Alive Ping
+
+on:
+  schedule:
+    # Runs every 12 minutes to keep the cloud server 100% awake 24/7
+    - cron: '*/12 * * * *'
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Custom Cloud Backend URL to ping'
+        required: false
+        default: ''
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping ProChat 24/7 Cloud Server
+        run: |
+          URL="${{ secrets.PROCHAT_BACKEND_URL }}"
+          if [ -z "$URL" ]; then
+            URL="${{ github.event.inputs.target_url }}"
+          fi
+          if [ -z "$URL" ]; then
+            URL="https://prochat-protapi7.onrender.com"
+          fi
+          
+          CLEAN_URL="${URL%/}"
+          echo "Sending 24/7 heartbeat to $CLEAN_URL/api/health..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$CLEAN_URL/api/health" || echo "000")
+          echo "Response HTTP Status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ ProChat Server is LIVE and healthy 24/7!"
+          else
+            echo "⚠️ Server response: $HTTP_STATUS (Waking up or URL needs initial deploy)"
+          fi
