@@ -9,7 +9,7 @@ import {
   MessageSquare, Send, LogOut, Search, Lock, Unlock, User, RefreshCw, AlertTriangle,
   Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone,
   Mail, Phone, AlertCircle, ArrowLeft, Clock, Paperclip, Image as ImageIcon, Video, Trash2, Eye, EyeOff, MoreVertical,
-  UserPlus, Users, UserCheck
+  UserPlus, Users, UserCheck, Camera
 } from 'lucide-react';
 import { askGemini, getSmartReplies, summarizeChat, translateText, polishText } from './gemini';
 import ExtensionModal from './components/ExtensionModal';
@@ -21,6 +21,7 @@ import ViewOnceModal from './components/ViewOnceModal';
 import DisappearingSettingsModal from './components/DisappearingSettingsModal';
 import DeleteMessageModal from './components/DeleteMessageModal';
 import FriendRequestsModal from './components/FriendRequestsModal';
+import CameraModal from './components/CameraModal';
 import { compressImage, readFileAsDataURL, formatDuration } from './utils/media';
 import './index.css';
 
@@ -114,6 +115,7 @@ function App() {
   const [fullscreenImage, setFullscreenImage] = useState(null);
   const [isFriendModalOpen, setIsFriendModalOpen] = useState(false);
   const [pendingIncomingCount, setPendingIncomingCount] = useState(0);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
   const fileInputRef = useRef(null);
 
   const activeChatRef = useRef(activeChat);
@@ -869,6 +871,14 @@ function App() {
     setPendingMedia(null);
   };
 
+  const handleCameraPhotoTaken = (dataUrl) => {
+    setPendingMedia({
+      dataUrl,
+      type: 'image/jpeg',
+      name: `camera_snap_${Date.now()}.jpg`
+    });
+  };
+
   const handleViewOnceOpen = (msg) => {
     if (msg.viewOnceState === 'expired') return;
     setActiveViewOnceMsg(msg);
@@ -1605,6 +1615,16 @@ function App() {
                   style={{ display: 'none' }} 
                 />
 
+                {/* Direct Camera Capture */}
+                <button 
+                  type="button" 
+                  className="attach-btn camera-input-btn" 
+                  onClick={() => setIsCameraOpen(true)} 
+                  title="Direct Camera: Snap & Send Photo"
+                >
+                  <Camera size={18} />
+                </button>
+
                 {extensions.voicenotes && (
                   <button 
                     type="button" 
@@ -1781,6 +1801,13 @@ function App() {
         token={token}
         currentUsername={username}
         onFriendAccepted={handleRefreshFriends}
+      />
+
+      {/* Direct Camera Viewfinder Modal */}
+      <CameraModal 
+        isOpen={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onPhotoTaken={handleCameraPhotoTaken}
       />
     </div>
   );

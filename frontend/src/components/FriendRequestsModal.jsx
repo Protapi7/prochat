@@ -40,38 +40,40 @@ export default function FriendRequestsModal({
     }
   };
 
+  const loadUsersList = async (query = '') => {
+    if (!token) return;
+    setIsSearching(true);
+    try {
+      const res = await fetch(getApiUrl(`/api/users/search?q=${encodeURIComponent(query.trim())}`), {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSearchResults(data);
+      }
+    } catch (e) {
+      console.error("Search error:", e);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
   useEffect(() => {
     if (isOpen) {
       loadRequests();
+      loadUsersList('');
       setStatusMsg(null);
     }
   }, [isOpen]);
 
-  // Live search debounced
+  // Live search debounced on any input change
   useEffect(() => {
-    if (!targetInput.trim() || targetInput.trim().length < 2) {
-      setSearchResults([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setIsSearching(true);
-      try {
-        const res = await fetch(getApiUrl(`/api/users/search?q=${encodeURIComponent(targetInput.trim())}`), {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setSearchResults(data);
-        }
-      } catch (e) {
-        console.error("Search error:", e);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 300);
-
+    if (!isOpen) return;
+    const timer = setTimeout(() => {
+      loadUsersList(targetInput);
+    }, 250);
     return () => clearTimeout(timer);
-  }, [targetInput, token]);
+  }, [targetInput, token, isOpen]);
 
   const handleSendRequest = async (target) => {
     const usernameToSend = target || targetInput.trim();
@@ -94,8 +96,8 @@ export default function FriendRequestsModal({
       const data = await res.json();
       if (res.ok) {
         setStatusMsg({ type: 'success', text: data.message || 'Friend request sent!' });
-        setTargetInput('');
         loadRequests();
+        loadUsersList(targetInput);
         if (data.status === 'accepted' && onFriendAccepted) {
           onFriendAccepted();
         }
@@ -243,11 +245,11 @@ export default function FriendRequestsModal({
             </form>
 
             {/* Live Search Results */}
-            {isSearching && <div className="searching-spinner">Searching users...</div>}
+            {isSearching && <div className="searching-spinner">Finding users...</div>}
 
-            {searchResults.length > 0 && (
+            {searchResults.length > 0 ? (
               <div className="search-results-list">
-                <div className="results-header">Search Results:</div>
+                <div className="results-header">{targetInput.trim() ? 'Search Results:' : 'Discover Registered People:'}</div>
                 {searchResults.map((user) => {
                   const rel = user.relation || {};
                   return (
@@ -294,7 +296,13 @@ export default function FriendRequestsModal({
                   );
                 })}
               </div>
-            )}
+            ) : targetInput.trim() && !isSearching ? (
+              <div className="empty-requests">
+                <Search size={32} className="empty-icon" />
+                <p>No user found for "{targetInput}"</p>
+                <span>You can still enter their exact username, email, or mobile number and tap "Send Request" above!</span>
+              </div>
+            ) : null}
           </div>
         )}
 

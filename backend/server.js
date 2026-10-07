@@ -256,23 +256,29 @@ app.get('/api/users', authenticateToken, async (req, res) => {
 // Search users to add as friends
 app.get('/api/users/search', authenticateToken, async (req, res) => {
   try {
-    const q = req.query.q ? req.query.q.trim() : '';
-    if (!q || q.length < 2) {
-      return res.json([]);
-    }
-    const cleanQ = q.toLowerCase();
-    const phoneQ = q.replace(/[\s-]/g, '');
+    const rawQ = req.query.q ? req.query.q.trim() : '';
+    const cleanQ = rawQ.replace(/^@/, '').toLowerCase();
+    const phoneQ = rawQ.replace(/[\s-+()]/g, '');
 
-    const result = await db.query(
-      `SELECT id, username, email, phone FROM users
+    let queryText = '';
+    let queryParams = [];
+
+    if (!cleanQ) {
+      // If query is empty, return all registered users (up to 30) for instant discovery
+      queryText = `SELECT id, username, email, phone FROM users WHERE id != $1 ORDER BY id DESC LIMIT 30`;
+      queryParams = [req.user.userId];
+    } else {
+      queryText = `SELECT id, username, email, phone FROM users
        WHERE id != $1 AND (
          LOWER(username) LIKE $2
          OR (email IS NOT NULL AND LOWER(email) LIKE $2)
          OR (phone IS NOT NULL AND phone LIKE $3)
        )
-       LIMIT 15`,
-      [req.user.userId, `%${cleanQ}%`, `%${phoneQ}%`]
-    );
+       LIMIT 30`;
+      queryParams = [req.user.userId, `%${cleanQ}%`, `%${phoneQ}%`];
+    }
+
+    const result = await db.query(queryText, queryParams);
 
     const relResult = await db.query(
       `SELECT id, sender_id, receiver_id, status FROM friend_requests WHERE sender_id = $1 OR receiver_id = $1`,
@@ -345,8 +351,8 @@ app.post('/api/friends/request', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Please enter a username, email or mobile number.' });
     }
 
-    const cleanTarget = targetUsername.trim();
-    const phoneTarget = cleanTarget.replace(/[\s-]/g, '');
+    const cleanTarget = targetUsername.trim().replace(/^@/, '');
+    const phoneTarget = cleanTarget.replace(/[\s-+()]/g, '');
 
     const userResult = await db.query(
       `SELECT id, username, email, phone FROM users 
