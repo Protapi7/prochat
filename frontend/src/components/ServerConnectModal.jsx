@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Server, QrCode, Wifi, CheckCircle2, AlertCircle, RefreshCw, Smartphone, Globe, Copy, Check, Radio } from 'lucide-react';
-import { getServerUrl, setServerUrl, reconnectWithServerUrl } from '../socket';
+import { getServerUrl, setServerUrl, reconnectWithServerUrl, DEFAULT_CLOUD_BACKEND } from '../socket';
 
 // Simple SVG QR Code Generator helper for zero external dependency rendering
 function SimpleQrCode({ text, size = 180 }) {
@@ -75,6 +75,7 @@ export default function ServerConnectModal({ isOpen, onClose, userToken, onServe
     const host = window.location.hostname || 'localhost';
     const port = 3001;
     const candidates = [
+      DEFAULT_CLOUD_BACKEND,
       `http://${host}:${port}`,
       `http://localhost:${port}`,
       `http://127.0.0.1:${port}`
@@ -182,7 +183,14 @@ export default function ServerConnectModal({ isOpen, onClose, userToken, onServe
             <button
               type="button"
               className="preset-btn Highlight"
-              onClick={() => { setInputUrl(`https://prochat-protapi7.onrender.com`); }}
+              onClick={async () => {
+                const target = DEFAULT_CLOUD_BACKEND;
+                setInputUrl(target);
+                await testConnection(target);
+                reconnectWithServerUrl(target, userToken);
+                setCurrentUrl(target);
+                if (onServerChanged) onServerChanged(target);
+              }}
               title="Connect to 24/7 Cloud Host on Render"
             >
               ☁️ Render Cloud (24/7)

@@ -368,9 +368,9 @@ function App() {
       console.error(e);
       const host = getServerUrl();
       if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
-        setAuthError(`GitHub Pages only hosts static files. Click "Server Connection & Pairing" below to enter your live backend server URL (e.g. Render or your local PC IP).`);
+        setAuthError(`Cannot connect to 24/7 Cloud Host at ${host}. Tap the Server Status pill above to launch or link your free Render cloud backend.`);
       } else {
-        setAuthError(`Cannot connect to host server at ${host}. Please ensure backend is running (port 3001).`);
+        setAuthError(`Cannot connect to host server at ${host}. Please ensure backend is running.`);
       }
     }
   };

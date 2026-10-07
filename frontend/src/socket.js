@@ -1,5 +1,7 @@
 import { io } from 'socket.io-client';
 
+export const DEFAULT_CLOUD_BACKEND = 'https://prochat-protapi7.onrender.com';
+
 export const getServerUrl = () => {
   try {
     const saved = localStorage.getItem('prochat_server_url');
@@ -8,14 +10,18 @@ export const getServerUrl = () => {
     }
   } catch (e) {}
 
-  if (import.meta.env.VITE_BACKEND_URL) {
-    return import.meta.env.VITE_BACKEND_URL.replace(/\/+$/, '');
+  if (import.meta.env.VITE_BACKEND_URL && import.meta.env.VITE_BACKEND_URL.trim()) {
+    return import.meta.env.VITE_BACKEND_URL.trim().replace(/\/+$/, '');
   }
 
   if (typeof window !== 'undefined' && window.location) {
-    const { hostname, port } = window.location;
+    const { hostname } = window.location;
     if (hostname === 'localhost' || hostname === '127.0.0.1') {
       return `http://${hostname}:3001`;
+    }
+    // GitHub Pages is static-only: automatically connect to 24/7 cloud server
+    if (hostname.endsWith('github.io')) {
+      return DEFAULT_CLOUD_BACKEND;
     }
   }
 

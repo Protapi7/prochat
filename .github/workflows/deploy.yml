@@ -40,6 +40,8 @@ jobs:
 
       - name: Build Frontend
         working-directory: ./frontend
+        env:
+          VITE_BACKEND_URL: ${{ secrets.PROCHAT_BACKEND_URL || 'https://prochat-protapi7.onrender.com' }}
         run: |
           npm run build
           cp ../backend/public/index.html ../backend/public/404.html
