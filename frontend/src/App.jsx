@@ -8,7 +8,8 @@ import {
 import { 
   MessageSquare, Send, LogOut, Search, Lock, Unlock, User, RefreshCw, AlertTriangle,
   Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone,
-  Mail, Phone, AlertCircle, ArrowLeft, Clock, Paperclip, Image as ImageIcon, Video, Trash2, Eye, EyeOff, MoreVertical
+  Mail, Phone, AlertCircle, ArrowLeft, Clock, Paperclip, Image as ImageIcon, Video, Trash2, Eye, EyeOff, MoreVertical,
+  UserPlus, Users, UserCheck
 } from 'lucide-react';
 import { askGemini, getSmartReplies, summarizeChat, translateText, polishText } from './gemini';
 import ExtensionModal from './components/ExtensionModal';
@@ -19,6 +20,7 @@ import MediaSendModal from './components/MediaSendModal';
 import ViewOnceModal from './components/ViewOnceModal';
 import DisappearingSettingsModal from './components/DisappearingSettingsModal';
 import DeleteMessageModal from './components/DeleteMessageModal';
+import FriendRequestsModal from './components/FriendRequestsModal';
 import { compressImage, readFileAsDataURL, formatDuration } from './utils/media';
 import './index.css';
 
@@ -110,6 +112,8 @@ function App() {
   const [activeViewOnceMsg, setActiveViewOnceMsg] = useState(null);
   const [deleteTargetMsg, setDeleteTargetMsg] = useState(null);
   const [fullscreenImage, setFullscreenImage] = useState(null);
+  const [isFriendModalOpen, setIsFriendModalOpen] = useState(false);
+  const [pendingIncomingCount, setPendingIncomingCount] = useState(0);
   const fileInputRef = useRef(null);
 
   const activeChatRef = useRef(activeChat);
@@ -327,12 +331,36 @@ function App() {
         }
       };
 
+      const fetchFriendRequestsCount = async () => {
+        try {
+          const res = await fetch(getApiUrl('/api/friends/requests'), {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setPendingIncomingCount((data.incoming || []).length);
+          }
+        } catch (e) {
+          console.error("Error fetching friend requests count", e);
+        }
+      };
+
       fetchUsers();
+      fetchFriendRequestsCount();
       connectSocket(token);
       
       const onStatusChange = (data) => {
         handleUserStatusChange(data);
         fetchUsers();
+      };
+
+      const onFriendRequestReceived = () => {
+        fetchFriendRequestsCount();
+      };
+
+      const onFriendRequestAccepted = () => {
+        fetchUsers();
+        fetchFriendRequestsCount();
       };
 
       const onChatError = (errData) => {
@@ -401,6 +429,8 @@ function App() {
       socket.on('offline_messages', handleOfflineMessages);
       socket.on('user_status_change', onStatusChange);
       socket.on('user_typing', handleUserTyping);
+      socket.on('friend_request_received', onFriendRequestReceived);
+      socket.on('friend_request_accepted', onFriendRequestAccepted);
       socket.on('chat_error', onChatError);
       socket.on('message_deleted', onMessageDeleted);
       socket.on('disappearing_setting_updated', onDisappearingUpdated);
@@ -411,6 +441,8 @@ function App() {
         socket.off('offline_messages', handleOfflineMessages);
         socket.off('user_status_change', onStatusChange);
         socket.off('user_typing', handleUserTyping);
+        socket.off('friend_request_received', onFriendRequestReceived);
+        socket.off('friend_request_accepted', onFriendRequestAccepted);
         socket.off('chat_error', onChatError);
         socket.off('message_deleted', onMessageDeleted);
         socket.off('disappearing_setting_updated', onDisappearingUpdated);
@@ -419,6 +451,18 @@ function App() {
       };
     }
   }, [token]);
+
+  const handleRefreshFriends = () => {
+    if (!token) return;
+    fetch(getApiUrl('/api/users'), { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(r => r.ok && r.json())
+      .then(d => d && setUsers(d))
+      .catch(e => console.error(e));
+    fetch(getApiUrl('/api/friends/requests'), { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(r => r.ok && r.json())
+      .then(d => d && setPendingIncomingCount((d.incoming || []).length))
+      .catch(e => console.error(e));
+  };
 
   const handleInputChange = (e) => {
     setInputMessage(e.target.value);
@@ -577,9 +621,18 @@ function App() {
     }
   };
 
-  const handleSendMessage = async (msgText) => {
-    const textToSend = msgText || inputMessage;
-    if (!activeChat || !textToSend.trim()) return;
+  const handleSendMessage = async (msgInput, options = {}) => {
+    let textToSend = '';
+    let msgPayload = null;
+    if (typeof msgInput === 'object' && msgInput !== null) {
+      msgPayload = msgInput;
+      textToSend = msgPayload.text || msgPayload.caption || '';
+    } else {
+      textToSend = (typeof msgInput === 'string' ? msgInput : inputMessage) || '';
+    }
+
+    if (!activeChat) return;
+    if (!textToSend.trim() && !msgPayload?.mediaUrl) return;
 
     // Check if message is a /gemini command
     if (textToSend.startsWith('/gemini ')) {
@@ -653,7 +706,7 @@ function App() {
       const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
 
       let msgPayloadObj = null;
-      if (typeof msgPayload === 'object' && msgPayload !== null) {
+      if (msgPayload) {
         msgPayloadObj = {
           id: messageId,
           sender: username,
@@ -661,7 +714,7 @@ function App() {
           type: msgPayload.type || 'text',
           mediaUrl: msgPayload.mediaUrl || null,
           caption: msgPayload.caption || null,
-          isViewOnce: !!(msgPayload.isViewOnce || options.isViewOnce),
+          isViewOnce: !!(msgPayload.isViewOnce || options?.isViewOnce),
           viewOnceState: 'unopened',
           expiresAt,
           disappearingTtl: activeTtl > 0 ? activeTtl : null,
@@ -669,7 +722,7 @@ function App() {
         };
       } else {
         const isVoice = typeof textToSend === 'string' && textToSend.startsWith('[Voice Note](');
-        const isViewOnce = !!(options.isViewOnce || isOnceTextMode);
+        const isViewOnce = !!(options?.isViewOnce || isOnceTextMode);
         msgPayloadObj = {
           id: messageId,
           sender: username,
@@ -1111,6 +1164,16 @@ function App() {
 
             <div className="header-icon-btns">
               <button 
+                className="icon-btn-nav friend-icon-btn" 
+                title="Friends & Contact Requests" 
+                onClick={() => setIsFriendModalOpen(true)}
+              >
+                <UserPlus size={18} className="text-purple" />
+                {pendingIncomingCount > 0 && (
+                  <span className="icon-badge-dot">{pendingIncomingCount}</span>
+                )}
+              </button>
+              <button 
                 className="icon-btn-nav" 
                 title="Mobile Auto Server Pair & Host Connection" 
                 onClick={() => setIsServerModalOpen(true)}
@@ -1162,9 +1225,34 @@ function App() {
             />
           </div>
 
+          <div className="friend-action-bar">
+            <button 
+              type="button" 
+              className="add-friend-pill-btn" 
+              onClick={() => setIsFriendModalOpen(true)}
+            >
+              <UserPlus size={15} />
+              <span>Add Friend / Requests</span>
+              {pendingIncomingCount > 0 && (
+                <span className="friend-incoming-pill">{pendingIncomingCount} new</span>
+              )}
+            </button>
+          </div>
+
           <div className="user-list">
             {filteredUsers.length === 0 ? (
-              <p className="no-users">No contacts found</p>
+              <div className="empty-friends-state">
+                <Users size={32} className="empty-friends-icon" />
+                <p className="empty-friends-title">No friends yet 👋</p>
+                <p className="empty-friends-sub">New accounts won't show automatically. Send a friend request to connect!</p>
+                <button 
+                  type="button" 
+                  className="empty-add-btn"
+                  onClick={() => setIsFriendModalOpen(true)}
+                >
+                  <UserPlus size={14} /> Add Friend
+                </button>
+              </div>
             ) : (
               filteredUsers.map(u => (
                 <div 
@@ -1685,6 +1773,15 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Friend Requests & Add Friends Modal */}
+      <FriendRequestsModal 
+        isOpen={isFriendModalOpen}
+        onClose={() => setIsFriendModalOpen(false)}
+        token={token}
+        currentUsername={username}
+        onFriendAccepted={handleRefreshFriends}
+      />
     </div>
   );
 }

@@ -24,6 +24,24 @@ const PORT = process.env.PORT || 3001;
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-development-key';
 
+// Socket.io Real-time Connected Users
+const connectedUsers = new Map(); // string userId -> Set of socketIds
+
+function notifyFriendUpdate(userAId, userBId) {
+  const socketsA = connectedUsers.get(String(userAId));
+  if (socketsA) {
+    for (const sid of socketsA) {
+      io.to(sid).emit('friend_request_accepted');
+    }
+  }
+  const socketsB = connectedUsers.get(String(userBId));
+  if (socketsB) {
+    for (const sid of socketsB) {
+      io.to(sid).emit('friend_request_accepted');
+    }
+  }
+}
+
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -199,23 +217,255 @@ app.get('/api/users/:username/key', async (req, res) => {
   }
 });
 
+// Get list of friends (only accepted friends + offline message partners)
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
-    const result = await db.query('SELECT id, username, email, phone, public_key FROM users');
-    const usersList = result.rows
-      .filter(u => u.username.toLowerCase() !== req.user.username.toLowerCase())
-      .map(u => ({
-        id: u.id,
-        username: u.username,
-        email: u.email,
-        phone: u.phone,
-        publicKey: u.public_key,
-        isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
-      }));
+    const currentUserId = req.user.userId;
+    const result = await db.query(
+      `SELECT u.id, u.username, u.email, u.phone, u.public_key
+       FROM users u
+       WHERE u.id != $1 AND (
+         u.id IN (
+           SELECT receiver_id FROM friend_requests WHERE sender_id = $1 AND status = 'accepted'
+           UNION
+           SELECT sender_id FROM friend_requests WHERE receiver_id = $1 AND status = 'accepted'
+         )
+         OR u.id IN (
+           SELECT sender_id FROM offline_messages WHERE recipient_id = $1
+           UNION
+           SELECT recipient_id FROM offline_messages WHERE sender_id = $1
+         )
+       )`,
+      [currentUserId]
+    );
+    const usersList = result.rows.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      phone: u.phone,
+      publicKey: u.public_key,
+      isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
+    }));
     res.json(usersList);
   } catch (error) {
     console.error('Fetch users error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Search users to add as friends
+app.get('/api/users/search', authenticateToken, async (req, res) => {
+  try {
+    const q = req.query.q ? req.query.q.trim() : '';
+    if (!q || q.length < 2) {
+      return res.json([]);
+    }
+    const cleanQ = q.toLowerCase();
+    const phoneQ = q.replace(/[\s-]/g, '');
+
+    const result = await db.query(
+      `SELECT id, username, email, phone FROM users
+       WHERE id != $1 AND (
+         LOWER(username) LIKE $2
+         OR (email IS NOT NULL AND LOWER(email) LIKE $2)
+         OR (phone IS NOT NULL AND phone LIKE $3)
+       )
+       LIMIT 15`,
+      [req.user.userId, `%${cleanQ}%`, `%${phoneQ}%`]
+    );
+
+    const relResult = await db.query(
+      `SELECT id, sender_id, receiver_id, status FROM friend_requests WHERE sender_id = $1 OR receiver_id = $1`,
+      [req.user.userId]
+    );
+
+    const relMap = new Map();
+    for (const rel of relResult.rows) {
+      const otherId = rel.sender_id === req.user.userId ? rel.receiver_id : rel.sender_id;
+      relMap.set(otherId, {
+        requestId: rel.id,
+        status: rel.status,
+        isSender: rel.sender_id === req.user.userId
+      });
+    }
+
+    const mapped = result.rows.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      phone: u.phone,
+      relation: relMap.get(u.id) || { status: 'none' },
+      isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
+    }));
+
+    res.json(mapped);
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ error: 'Failed to search users' });
+  }
+});
+
+// Get incoming and outgoing pending friend requests
+app.get('/api/friends/requests', authenticateToken, async (req, res) => {
+  try {
+    const currentUserId = req.user.userId;
+    const incomingResult = await db.query(
+      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username, u.email, u.phone
+       FROM friend_requests fr
+       JOIN users u ON fr.sender_id = u.id
+       WHERE fr.receiver_id = $1 AND fr.status = 'pending'
+       ORDER BY fr.created_at DESC`,
+      [currentUserId]
+    );
+
+    const outgoingResult = await db.query(
+      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username, u.email, u.phone
+       FROM friend_requests fr
+       JOIN users u ON fr.receiver_id = u.id
+       WHERE fr.sender_id = $1 AND fr.status = 'pending'
+       ORDER BY fr.created_at DESC`,
+      [currentUserId]
+    );
+
+    res.json({
+      incoming: incomingResult.rows,
+      outgoing: outgoingResult.rows
+    });
+  } catch (error) {
+    console.error('Fetch friend requests error:', error);
+    res.status(500).json({ error: 'Failed to fetch friend requests' });
+  }
+});
+
+// Send a friend request
+app.post('/api/friends/request', authenticateToken, async (req, res) => {
+  try {
+    const { targetUsername } = req.body;
+    if (!targetUsername || !targetUsername.trim()) {
+      return res.status(400).json({ error: 'Please enter a username, email or mobile number.' });
+    }
+
+    const cleanTarget = targetUsername.trim();
+    const phoneTarget = cleanTarget.replace(/[\s-]/g, '');
+
+    const userResult = await db.query(
+      `SELECT id, username, email, phone FROM users 
+       WHERE LOWER(username) = LOWER($1) 
+          OR (email IS NOT NULL AND LOWER(email) = LOWER($1))
+          OR (phone IS NOT NULL AND phone = $2)`,
+      [cleanTarget, phoneTarget]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: `User "${cleanTarget}" not found.` });
+    }
+
+    const targetUser = userResult.rows[0];
+    if (targetUser.id === req.user.userId) {
+      return res.status(400).json({ error: 'You cannot send a friend request to yourself.' });
+    }
+
+    const existing = await db.query(
+      `SELECT * FROM friend_requests 
+       WHERE (sender_id = $1 AND receiver_id = $2) 
+          OR (sender_id = $2 AND receiver_id = $1)`,
+      [req.user.userId, targetUser.id]
+    );
+
+    if (existing.rows.length > 0) {
+      const row = existing.rows[0];
+      if (row.status === 'accepted') {
+        return res.status(400).json({ error: `You and @${targetUser.username} are already friends!` });
+      }
+      if (row.sender_id === req.user.userId && row.status === 'pending') {
+        return res.status(400).json({ error: `Friend request to @${targetUser.username} is already pending.` });
+      }
+      if (row.receiver_id === req.user.userId && row.status === 'pending') {
+        await db.query(
+          `UPDATE friend_requests SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [row.id]
+        );
+        notifyFriendUpdate(req.user.userId, targetUser.id);
+        return res.json({ 
+          message: `Mutual request! You and @${targetUser.username} are now friends!`,
+          status: 'accepted'
+        });
+      }
+    }
+
+    await db.query(
+      `INSERT INTO friend_requests (sender_id, receiver_id, status) VALUES ($1, $2, 'pending')`,
+      [req.user.userId, targetUser.id]
+    );
+
+    const recipientSockets = connectedUsers.get(String(targetUser.id));
+    if (recipientSockets) {
+      for (const sockId of recipientSockets) {
+        io.to(sockId).emit('friend_request_received', {
+          senderId: req.user.userId,
+          senderUsername: req.user.username
+        });
+      }
+    }
+
+    res.json({ 
+      message: `Friend request sent to @${targetUser.username}!`,
+      status: 'pending'
+    });
+  } catch (error) {
+    console.error('Send friend request error:', error);
+    res.status(500).json({ error: 'Failed to send friend request' });
+  }
+});
+
+// Accept a friend request
+app.post('/api/friends/accept', authenticateToken, async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) {
+      return res.status(400).json({ error: 'Request ID is required' });
+    }
+
+    const reqResult = await db.query(
+      `SELECT * FROM friend_requests WHERE id = $1 AND receiver_id = $2`,
+      [requestId, req.user.userId]
+    );
+
+    if (reqResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Friend request not found or unauthorized' });
+    }
+
+    const fr = reqResult.rows[0];
+    await db.query(
+      `UPDATE friend_requests SET status = 'accepted', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [requestId]
+    );
+
+    notifyFriendUpdate(req.user.userId, fr.sender_id);
+    res.json({ message: 'Friend request accepted!' });
+  } catch (error) {
+    console.error('Accept friend request error:', error);
+    res.status(500).json({ error: 'Failed to accept friend request' });
+  }
+});
+
+// Reject or cancel a friend request
+app.post('/api/friends/reject', authenticateToken, async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) {
+      return res.status(400).json({ error: 'Request ID is required' });
+    }
+
+    await db.query(
+      `DELETE FROM friend_requests WHERE id = $1 AND (receiver_id = $2 OR sender_id = $2)`,
+      [requestId, req.user.userId]
+    );
+
+    res.json({ message: 'Friend request removed.' });
+  } catch (error) {
+    console.error('Reject friend request error:', error);
+    res.status(500).json({ error: 'Failed to remove friend request' });
   }
 });
 
@@ -263,10 +513,7 @@ app.post('/api/gemini/generate', authenticateToken, async (req, res) => {
   }
 });
 
-
 // Socket.io Real-time Logic
-const connectedUsers = new Map(); // string userId -> Set of socketIds
-
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
