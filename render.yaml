@@ -13,7 +13,3 @@ services:
         generateValue: true
       - key: NODE_ENV
         value: production
-      # Optional Cloud PostgreSQL (e.g. Neon.tech / Supabase / Render). 
-      # If left empty, ProChat automatically uses SQLite with zero configuration!
-      - key: DATABASE_URL
-        sync: false
