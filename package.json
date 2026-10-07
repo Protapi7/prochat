@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "description": "Monorepo root for Pro Chat deployment",
   "scripts": {
-    "install-backend": "cd backend && npm install",
-    "build-frontend": "cd frontend && npm install && npm run build",
+    "install-backend": "npm --prefix backend install",
+    "build-frontend": "npm --prefix frontend install && npm --prefix frontend run build",
     "build": "npm run build-frontend && npm run install-backend",
-    "start": "cd backend && npm start"
+    "start": "node backend/server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
