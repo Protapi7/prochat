@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   UserPlus, UserCheck, UserX, Check, X, Search, Clock, 
-  Send, Users, AlertCircle, Sparkles, CheckCircle2 
+  Send, Users, AlertCircle, CheckCircle2, MessageSquare 
 } from 'lucide-react';
 import { getServerUrl } from '../socket';
 
@@ -10,12 +10,14 @@ export default function FriendRequestsModal({
   onClose, 
   token, 
   currentUsername,
-  onFriendAccepted 
+  onFriendAccepted,
+  onSelectChat
 }) {
-  const [activeTab, setActiveTab] = useState('add'); // 'add' | 'incoming' | 'sent'
+  const [activeTab, setActiveTab] = useState('add'); // 'add' | 'friends' | 'incoming' | 'sent'
   const [targetInput, setTargetInput] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [friendsList, setFriendsList] = useState([]);
   const [incomingRequests, setIncomingRequests] = useState([]);
   const [outgoingRequests, setOutgoingRequests] = useState([]);
   const [statusMsg, setStatusMsg] = useState(null); // { type: 'success' | 'error', text: '' }
@@ -40,11 +42,33 @@ export default function FriendRequestsModal({
     }
   };
 
-  const loadUsersList = async (query = '') => {
+  // Fetch current friends list
+  const loadFriends = async () => {
     if (!token) return;
+    try {
+      const res = await fetch(getApiUrl('/api/users'), {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFriendsList(data || []);
+      }
+    } catch (err) {
+      console.error('Error fetching friends:', err);
+    }
+  };
+
+  // Search users strictly by User ID / username
+  const searchUsersByUserId = async (query = '') => {
+    if (!token) return;
+    const clean = query.trim().replace(/^@/, '');
+    if (!clean) {
+      setSearchResults([]);
+      return;
+    }
     setIsSearching(true);
     try {
-      const res = await fetch(getApiUrl(`/api/users/search?q=${encodeURIComponent(query.trim())}`), {
+      const res = await fetch(getApiUrl(`/api/users/search?q=${encodeURIComponent(clean)}`), {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
@@ -61,24 +85,34 @@ export default function FriendRequestsModal({
   useEffect(() => {
     if (isOpen) {
       loadRequests();
-      loadUsersList('');
+      loadFriends();
       setStatusMsg(null);
+      if (targetInput.trim()) {
+        searchUsersByUserId(targetInput);
+      } else {
+        setSearchResults([]);
+      }
     }
   }, [isOpen]);
 
-  // Live search debounced on any input change
+  // Live search debounced when typing User ID
   useEffect(() => {
     if (!isOpen) return;
+    const clean = targetInput.trim().replace(/^@/, '');
+    if (!clean) {
+      setSearchResults([]);
+      return;
+    }
     const timer = setTimeout(() => {
-      loadUsersList(targetInput);
+      searchUsersByUserId(targetInput);
     }, 250);
     return () => clearTimeout(timer);
   }, [targetInput, token, isOpen]);
 
   const handleSendRequest = async (target) => {
-    const usernameToSend = target || targetInput.trim();
+    const usernameToSend = (target || targetInput).trim().replace(/^@/, '');
     if (!usernameToSend) {
-      setStatusMsg({ type: 'error', text: 'Please enter a username, email, or phone number.' });
+      setStatusMsg({ type: 'error', text: 'Please enter a username or User ID.' });
       return;
     }
 
@@ -97,7 +131,8 @@ export default function FriendRequestsModal({
       if (res.ok) {
         setStatusMsg({ type: 'success', text: data.message || 'Friend request sent!' });
         loadRequests();
-        loadUsersList(targetInput);
+        loadFriends();
+        searchUsersByUserId(targetInput);
         if (data.status === 'accepted' && onFriendAccepted) {
           onFriendAccepted();
         }
@@ -125,6 +160,7 @@ export default function FriendRequestsModal({
       if (res.ok) {
         setStatusMsg({ type: 'success', text: 'Friend request accepted!' });
         loadRequests();
+        loadFriends();
         if (onFriendAccepted) onFriendAccepted();
       } else {
         const data = await res.json();
@@ -158,6 +194,36 @@ export default function FriendRequestsModal({
     }
   };
 
+  // Unfriend handler
+  const handleUnfriend = async (targetUserId, targetUsername) => {
+    if (!window.confirm(`Are you sure you want to unfriend @${targetUsername}?`)) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch(getApiUrl('/api/friends/unfriend'), {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify({ targetUserId, targetUsername })
+      });
+      if (res.ok) {
+        setStatusMsg({ type: 'success', text: `Unfriended @${targetUsername}.` });
+        loadRequests();
+        loadFriends();
+        if (targetInput.trim()) searchUsersByUserId(targetInput);
+        if (onFriendAccepted) onFriendAccepted();
+      } else {
+        const data = await res.json();
+        setStatusMsg({ type: 'error', text: data.error || 'Failed to unfriend.' });
+      }
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: 'Connection error while unfriending.' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -183,6 +249,14 @@ export default function FriendRequestsModal({
           >
             <UserPlus size={16} />
             <span>Add Friend</span>
+          </button>
+          <button 
+            type="button" 
+            className={`friend-tab-btn ${activeTab === 'friends' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('friends'); setStatusMsg(null); loadFriends(); }}
+          >
+            <UserCheck size={16} />
+            <span>My Friends ({friendsList.length})</span>
           </button>
           <button 
             type="button" 
@@ -213,11 +287,11 @@ export default function FriendRequestsModal({
           </div>
         )}
 
-        {/* TAB 1: ADD FRIEND */}
+        {/* TAB 1: ADD FRIEND (STRICT USER ID SEARCH) */}
         {activeTab === 'add' && (
           <div className="friend-tab-content">
             <p className="tab-instructions">
-              Send a friend request by typing their <strong>Username</strong>, <strong>Email</strong>, or <strong>Phone Number</strong>.
+              Find and add people by searching their exact <strong>Username / User ID</strong>.
             </p>
 
             <form 
@@ -228,7 +302,7 @@ export default function FriendRequestsModal({
                 <Search size={18} className="search-icon" />
                 <input 
                   type="text" 
-                  placeholder="Enter username, email or mobile..."
+                  placeholder="Enter User ID (e.g. alex or @alex)"
                   value={targetInput}
                   onChange={(e) => setTargetInput(e.target.value)}
                   autoFocus
@@ -245,11 +319,11 @@ export default function FriendRequestsModal({
             </form>
 
             {/* Live Search Results */}
-            {isSearching && <div className="searching-spinner">Finding users...</div>}
+            {isSearching && <div className="searching-spinner">Searching User ID...</div>}
 
             {searchResults.length > 0 ? (
               <div className="search-results-list">
-                <div className="results-header">{targetInput.trim() ? 'Search Results:' : 'Discover Registered People:'}</div>
+                <div className="results-header">Search Results:</div>
                 {searchResults.map((user) => {
                   const rel = user.relation || {};
                   return (
@@ -262,14 +336,35 @@ export default function FriendRequestsModal({
                         <div className="user-details">
                           <span className="username">@{user.username}</span>
                           <span className="meta">
-                            {user.email || user.phone || (user.isOnline ? 'Online' : 'Offline')}
+                            {user.isOnline ? 'Online' : 'Offline'}
                           </span>
                         </div>
                       </div>
 
                       <div className="user-actions">
                         {rel.status === 'accepted' ? (
-                          <span className="badge-friend"><UserCheck size={14} /> Friends</span>
+                          <div className="user-action-group">
+                            <span className="badge-friend"><UserCheck size={14} /> Friends</span>
+                            {onSelectChat && (
+                              <button 
+                                type="button" 
+                                className="btn-chat-sm"
+                                onClick={() => { onSelectChat(user.username); onClose(); }}
+                                title="Open Chat"
+                              >
+                                <MessageSquare size={14} /> Chat
+                              </button>
+                            )}
+                            <button 
+                              type="button" 
+                              className="btn-unfriend-sm"
+                              onClick={() => handleUnfriend(user.id, user.username)}
+                              disabled={actionLoading}
+                              title="Unfriend user"
+                            >
+                              <UserX size={14} /> Unfriend
+                            </button>
+                          </div>
                         ) : rel.status === 'pending' && rel.isSender ? (
                           <span className="badge-pending"><Clock size={14} /> Pending</span>
                         ) : rel.status === 'pending' && !rel.isSender ? (
@@ -300,13 +395,73 @@ export default function FriendRequestsModal({
               <div className="empty-requests">
                 <Search size={32} className="empty-icon" />
                 <p>No user found for "{targetInput}"</p>
-                <span>You can still enter their exact username, email, or mobile number and tap "Send Request" above!</span>
+                <span>Check spelling or make sure your friend has registered their User ID on ProChat!</span>
+              </div>
+            ) : !isSearching ? (
+              <div className="empty-requests">
+                <Search size={32} className="empty-icon" />
+                <p>Search by User ID</p>
+                <span>Type your friend's exact username above to find them securely.</span>
               </div>
             ) : null}
           </div>
         )}
 
-        {/* TAB 2: INCOMING REQUESTS */}
+        {/* TAB 2: MY FRIENDS & UNFRIEND */}
+        {activeTab === 'friends' && (
+          <div className="friend-tab-content">
+            {friendsList.length === 0 ? (
+              <div className="empty-requests">
+                <Users size={36} className="empty-icon" />
+                <p>No friends added yet</p>
+                <span>Use the "Add Friend" tab to search for someone by their User ID!</span>
+              </div>
+            ) : (
+              <div className="requests-list">
+                {friendsList.map((f) => (
+                  <div key={f.id} className="request-card">
+                    <div className="user-info">
+                      <div className="avatar-circle">
+                        {f.username.charAt(0).toUpperCase()}
+                        {f.isOnline && <span className="online-indicator" />}
+                      </div>
+                      <div className="user-details">
+                        <span className="username">@{f.username}</span>
+                        <span className="meta">{f.isOnline ? 'Online' : 'Offline'}</span>
+                      </div>
+                    </div>
+
+                    <div className="request-actions">
+                      {onSelectChat && (
+                        <button 
+                          type="button" 
+                          className="btn-chat-sm"
+                          onClick={() => { onSelectChat(f.username); onClose(); }}
+                          title="Open Chat"
+                        >
+                          <MessageSquare size={14} />
+                          <span>Chat</span>
+                        </button>
+                      )}
+                      <button 
+                        type="button" 
+                        className="btn-unfriend-action"
+                        onClick={() => handleUnfriend(f.id, f.username)}
+                        disabled={actionLoading}
+                        title={`Unfriend @${f.username}`}
+                      >
+                        <UserX size={15} />
+                        <span>Unfriend</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: INCOMING REQUESTS */}
         {activeTab === 'incoming' && (
           <div className="friend-tab-content">
             {incomingRequests.length === 0 ? (
@@ -332,7 +487,7 @@ export default function FriendRequestsModal({
                     <div className="request-actions">
                       <button 
                         type="button" 
-                        className="btn-accept" 
+                        className="btn-accept"
                         onClick={() => handleAcceptRequest(req.id)}
                         disabled={actionLoading}
                         title="Accept friend request"
@@ -342,7 +497,7 @@ export default function FriendRequestsModal({
                       </button>
                       <button 
                         type="button" 
-                        className="btn-decline" 
+                        className="btn-decline"
                         onClick={() => handleRejectOrCancelRequest(req.id)}
                         disabled={actionLoading}
                         title="Decline friend request"
@@ -357,7 +512,7 @@ export default function FriendRequestsModal({
           </div>
         )}
 
-        {/* TAB 3: SENT REQUESTS */}
+        {/* TAB 4: SENT REQUESTS */}
         {activeTab === 'sent' && (
           <div className="friend-tab-content">
             {outgoingRequests.length === 0 ? (
@@ -381,17 +536,16 @@ export default function FriendRequestsModal({
                     </div>
 
                     <div className="request-actions">
-                      <span className="badge-pending">
-                        <Clock size={13} /> Pending
-                      </span>
+                      <span className="badge-pending"><Clock size={13} /> Pending</span>
                       <button 
                         type="button" 
-                        className="btn-cancel-req" 
+                        className="btn-cancel-req"
                         onClick={() => handleRejectOrCancelRequest(req.id)}
                         disabled={actionLoading}
                         title="Cancel friend request"
                       >
-                        <X size={14} /> Cancel
+                        <X size={14} />
+                        <span>Cancel</span>
                       </button>
                     </div>
                   </div>
@@ -400,6 +554,7 @@ export default function FriendRequestsModal({
             )}
           </div>
         )}
+
       </div>
     </div>
   );

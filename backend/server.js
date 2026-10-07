@@ -32,12 +32,14 @@ function notifyFriendUpdate(userAId, userBId) {
   if (socketsA) {
     for (const sid of socketsA) {
       io.to(sid).emit('friend_request_accepted');
+      io.to(sid).emit('friend_list_updated');
     }
   }
   const socketsB = connectedUsers.get(String(userBId));
   if (socketsB) {
     for (const sid of socketsB) {
       io.to(sid).emit('friend_request_accepted');
+      io.to(sid).emit('friend_list_updated');
     }
   }
 }
@@ -205,24 +207,42 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Helper to reliably find a user by username / User ID (with or without leading @)
+async function findUserByUsername(rawName) {
+  if (!rawName) return null;
+  const clean = rawName.trim().replace(/^@/, '');
+  if (!clean) return null;
+  // 1. Exact match
+  let res = await db.query('SELECT id, username, public_key FROM users WHERE LOWER(username) = LOWER($1)', [clean]);
+  if (res.rows.length > 0) return res.rows[0];
+  // 2. Fuzzy match fallback
+  let fuzzy = await db.query('SELECT id, username, public_key FROM users WHERE LOWER(username) LIKE $1 LIMIT 1', [`%${clean.toLowerCase()}%`]);
+  if (fuzzy.rows.length > 0) return fuzzy.rows[0];
+  return null;
+}
+
 app.get('/api/users/:username/key', async (req, res) => {
   try {
-    const result = await db.query('SELECT public_key FROM users WHERE LOWER(username) = LOWER($1)', [req.params.username]);
-    if (result.rows.length === 0) {
+    const rawUsername = (req.params.username || '').trim().replace(/^@/, '');
+    if (!rawUsername) {
+      return res.status(400).json({ error: 'Username required' });
+    }
+    const user = await findUserByUsername(rawUsername);
+    if (!user || !user.public_key) {
       return res.status(404).json({ error: 'User not found' });
     }
-    res.json({ publicKey: result.rows[0].public_key });
+    res.json({ publicKey: user.public_key, username: user.username });
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Get list of friends (only accepted friends + offline message partners)
+// Get list of friends (only accepted friends + offline message partners, WITHOUT email/phone)
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const currentUserId = req.user.userId;
     const result = await db.query(
-      `SELECT u.id, u.username, u.email, u.phone, u.public_key
+      `SELECT u.id, u.username, u.public_key
        FROM users u
        WHERE u.id != $1 AND (
          u.id IN (
@@ -241,8 +261,6 @@ app.get('/api/users', authenticateToken, async (req, res) => {
     const usersList = result.rows.map(u => ({
       id: u.id,
       username: u.username,
-      email: u.email,
-      phone: u.phone,
       publicKey: u.public_key,
       isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
     }));
@@ -253,32 +271,23 @@ app.get('/api/users', authenticateToken, async (req, res) => {
   }
 });
 
-// Search users to add as friends
+// Search users to add as friends - STRICTLY by User ID / Username (never leak email or phone)
 app.get('/api/users/search', authenticateToken, async (req, res) => {
   try {
     const rawQ = req.query.q ? req.query.q.trim() : '';
     const cleanQ = rawQ.replace(/^@/, '').toLowerCase();
-    const phoneQ = rawQ.replace(/[\s-+()]/g, '');
 
-    let queryText = '';
-    let queryParams = [];
-
+    // If query is empty, do not show other users (strict privacy)
     if (!cleanQ) {
-      // If query is empty, return all registered users (up to 30) for instant discovery
-      queryText = `SELECT id, username, email, phone FROM users WHERE id != $1 ORDER BY id DESC LIMIT 30`;
-      queryParams = [req.user.userId];
-    } else {
-      queryText = `SELECT id, username, email, phone FROM users
-       WHERE id != $1 AND (
-         LOWER(username) LIKE $2
-         OR (email IS NOT NULL AND LOWER(email) LIKE $2)
-         OR (phone IS NOT NULL AND phone LIKE $3)
-       )
-       LIMIT 30`;
-      queryParams = [req.user.userId, `%${cleanQ}%`, `%${phoneQ}%`];
+      return res.json([]);
     }
 
-    const result = await db.query(queryText, queryParams);
+    const result = await db.query(
+      `SELECT id, username FROM users 
+       WHERE id != $1 AND LOWER(username) LIKE $2 
+       LIMIT 20`,
+      [req.user.userId, `%${cleanQ}%`]
+    );
 
     const relResult = await db.query(
       `SELECT id, sender_id, receiver_id, status FROM friend_requests WHERE sender_id = $1 OR receiver_id = $1`,
@@ -298,8 +307,6 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
     const mapped = result.rows.map(u => ({
       id: u.id,
       username: u.username,
-      email: u.email,
-      phone: u.phone,
       relation: relMap.get(u.id) || { status: 'none' },
       isOnline: connectedUsers.has(String(u.id)) && connectedUsers.get(String(u.id)).size > 0
     }));
@@ -311,12 +318,12 @@ app.get('/api/users/search', authenticateToken, async (req, res) => {
   }
 });
 
-// Get incoming and outgoing pending friend requests
+// Get incoming and outgoing pending friend requests (WITHOUT email/phone)
 app.get('/api/friends/requests', authenticateToken, async (req, res) => {
   try {
     const currentUserId = req.user.userId;
     const incomingResult = await db.query(
-      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username, u.email, u.phone
+      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username
        FROM friend_requests fr
        JOIN users u ON fr.sender_id = u.id
        WHERE fr.receiver_id = $1 AND fr.status = 'pending'
@@ -325,7 +332,7 @@ app.get('/api/friends/requests', authenticateToken, async (req, res) => {
     );
 
     const outgoingResult = await db.query(
-      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username, u.email, u.phone
+      `SELECT fr.id, fr.status, fr.created_at, u.id as user_id, u.username
        FROM friend_requests fr
        JOIN users u ON fr.receiver_id = u.id
        WHERE fr.sender_id = $1 AND fr.status = 'pending'
@@ -343,30 +350,42 @@ app.get('/api/friends/requests', authenticateToken, async (req, res) => {
   }
 });
 
-// Send a friend request
+// Send a friend request - search by User ID / Username only
 app.post('/api/friends/request', authenticateToken, async (req, res) => {
   try {
     const { targetUsername } = req.body;
     if (!targetUsername || !targetUsername.trim()) {
-      return res.status(400).json({ error: 'Please enter a username, email or mobile number.' });
+      return res.status(400).json({ error: 'Please enter a username or User ID.' });
     }
 
     const cleanTarget = targetUsername.trim().replace(/^@/, '');
-    const phoneTarget = cleanTarget.replace(/[\s-+()]/g, '');
 
+    // 1. Exact match by username
     const userResult = await db.query(
-      `SELECT id, username, email, phone FROM users 
-       WHERE LOWER(username) = LOWER($1) 
-          OR (email IS NOT NULL AND LOWER(email) = LOWER($1))
-          OR (phone IS NOT NULL AND phone = $2)`,
-      [cleanTarget, phoneTarget]
+      `SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)`,
+      [cleanTarget]
     );
 
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: `User "${cleanTarget}" not found.` });
+    let targetUser = null;
+    if (userResult.rows.length > 0) {
+      targetUser = userResult.rows[0];
+    } else {
+      // 2. Fuzzy fallback search if exact match returned 0
+      const fuzzyResult = await db.query(
+        `SELECT id, username FROM users 
+         WHERE id != $1 AND LOWER(username) LIKE $2 
+         LIMIT 1`,
+        [req.user.userId, `%${cleanTarget.toLowerCase()}%`]
+      );
+      if (fuzzyResult.rows.length > 0) {
+        targetUser = fuzzyResult.rows[0];
+      }
     }
 
-    const targetUser = userResult.rows[0];
+    if (!targetUser) {
+      return res.status(404).json({ error: `User "${cleanTarget}" not found. Please ensure they have created an account on ProChat.` });
+    }
+
     if (targetUser.id === req.user.userId) {
       return res.status(400).json({ error: 'You cannot send a friend request to yourself.' });
     }
@@ -475,6 +494,37 @@ app.post('/api/friends/reject', authenticateToken, async (req, res) => {
   }
 });
 
+// Unfriend / remove friend
+app.post('/api/friends/unfriend', authenticateToken, async (req, res) => {
+  try {
+    const { targetUserId, targetUsername } = req.body;
+    let targetId = targetUserId;
+    if (!targetId && targetUsername) {
+      const u = await findUserByUsername(targetUsername);
+      if (u) targetId = u.id;
+    }
+    if (!targetId) {
+      return res.status(400).json({ error: 'Target user ID or username is required' });
+    }
+
+    // Delete friendship from friend_requests
+    await db.query(
+      `DELETE FROM friend_requests 
+       WHERE (sender_id = $1 AND receiver_id = $2) 
+          OR (sender_id = $2 AND receiver_id = $1)`,
+      [req.user.userId, targetId]
+    );
+
+    // Notify both users in real-time to refresh friend lists
+    notifyFriendUpdate(req.user.userId, targetId);
+
+    res.json({ success: true, message: 'Friend removed successfully', targetUserId: targetId });
+  } catch (error) {
+    console.error('Unfriend error:', error);
+    res.status(500).json({ error: 'Failed to unfriend user' });
+  }
+});
+
 app.post('/api/users/update-key', authenticateToken, async (req, res) => {
   try {
     const { publicKey } = req.body;
@@ -569,9 +619,9 @@ io.on('connection', async (socket) => {
   socket.on('typing_start', async ({ recipientUsername }) => {
     try {
       if (!recipientUsername) return;
-      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+      const recipient = await findUserByUsername(recipientUsername);
+      if (recipient) {
+        const recipientSockets = connectedUsers.get(String(recipient.id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('user_typing', { username: socket.username, isTyping: true });
@@ -584,9 +634,9 @@ io.on('connection', async (socket) => {
   socket.on('typing_stop', async ({ recipientUsername }) => {
     try {
       if (!recipientUsername) return;
-      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+      const recipient = await findUserByUsername(recipientUsername);
+      if (recipient) {
+        const recipientSockets = connectedUsers.get(String(recipient.id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('user_typing', { username: socket.username, isTyping: false });
@@ -601,11 +651,10 @@ io.on('connection', async (socket) => {
       if (!recipientUsername || !encryptedPayload) {
         return socket.emit('chat_error', { message: 'Message payload is missing' });
       }
-      const recipientResult = await db.query('SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length === 0) {
+      const recipient = await findUserByUsername(recipientUsername);
+      if (!recipient) {
         return socket.emit('chat_error', { message: `User "${recipientUsername}" was not found.` });
       }
-      const recipient = recipientResult.rows[0];
       const recipientSockets = connectedUsers.get(String(recipient.id));
       
       if (recipientSockets && recipientSockets.size > 0) {
@@ -632,9 +681,9 @@ io.on('connection', async (socket) => {
   socket.on('delete_message', async ({ recipientUsername, messageId, deleteForEveryone }) => {
     try {
       if (!recipientUsername || !messageId) return;
-      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+      const recipient = await findUserByUsername(recipientUsername);
+      if (recipient) {
+        const recipientSockets = connectedUsers.get(String(recipient.id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('message_deleted', {
@@ -653,9 +702,9 @@ io.on('connection', async (socket) => {
   socket.on('disappearing_setting', async ({ recipientUsername, durationSeconds }) => {
     try {
       if (!recipientUsername) return;
-      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+      const recipient = await findUserByUsername(recipientUsername);
+      if (recipient) {
+        const recipientSockets = connectedUsers.get(String(recipient.id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('disappearing_setting_updated', {
@@ -673,9 +722,9 @@ io.on('connection', async (socket) => {
   socket.on('view_once_opened', async ({ recipientUsername, messageId }) => {
     try {
       if (!recipientUsername || !messageId) return;
-      const recipientResult = await db.query('SELECT id FROM users WHERE LOWER(username) = LOWER($1)', [recipientUsername.trim()]);
-      if (recipientResult.rows.length > 0) {
-        const recipientSockets = connectedUsers.get(String(recipientResult.rows[0].id));
+      const recipient = await findUserByUsername(recipientUsername);
+      if (recipient) {
+        const recipientSockets = connectedUsers.get(String(recipient.id));
         if (recipientSockets) {
           for (const socketId of recipientSockets) {
             io.to(socketId).emit('view_once_expired', {

@@ -10,27 +10,12 @@ export const getServerUrl = () => {
     }
   } catch (e) {}
 
-  if (typeof window !== 'undefined' && window.location) {
-    const { hostname } = window.location;
-    // GitHub Pages is static-only: automatically connect to 24/7 cloud server
-    if (hostname.endsWith('github.io')) {
-      return DEFAULT_CLOUD_BACKEND;
-    }
-    // Local development
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return `http://${hostname}:3001`;
-    }
-    // Local Network IP (e.g. Android phone or friend on same Wi-Fi)
-    if (/^(\d{1,3}\.){3}\d{1,3}$/.test(hostname)) {
-      return `http://${hostname}:3001`;
-    }
-  }
-
   if (import.meta.env.VITE_BACKEND_URL && import.meta.env.VITE_BACKEND_URL.trim()) {
     return import.meta.env.VITE_BACKEND_URL.trim().replace(/\/+$/, '');
   }
 
-  return typeof window !== 'undefined' && window.location ? window.location.origin : DEFAULT_CLOUD_BACKEND;
+  // Always default to 24/7 Render Cloud backend so all devices, phones, and computers share the exact same users and database
+  return DEFAULT_CLOUD_BACKEND;
 };
 
 export const setServerUrl = (newUrl) => {

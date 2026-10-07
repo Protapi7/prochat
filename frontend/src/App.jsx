@@ -9,7 +9,7 @@ import {
   MessageSquare, Send, LogOut, Search, Lock, Unlock, User, RefreshCw, AlertTriangle,
   Bot, Sparkles, Settings, Mic, Download, Globe, Wand2, FileText, CheckCircle2, ChevronDown, Server, Smartphone,
   Mail, Phone, AlertCircle, ArrowLeft, Clock, Paperclip, Image as ImageIcon, Video, Trash2, Eye, EyeOff, MoreVertical,
-  UserPlus, Users, UserCheck, Camera
+  UserPlus, Users, UserCheck, UserX, Camera
 } from 'lucide-react';
 import { askGemini, getSmartReplies, summarizeChat, translateText, polishText } from './gemini';
 import ExtensionModal from './components/ExtensionModal';
@@ -433,6 +433,7 @@ function App() {
       socket.on('user_typing', handleUserTyping);
       socket.on('friend_request_received', onFriendRequestReceived);
       socket.on('friend_request_accepted', onFriendRequestAccepted);
+      socket.on('friend_list_updated', onFriendRequestAccepted);
       socket.on('chat_error', onChatError);
       socket.on('message_deleted', onMessageDeleted);
       socket.on('disappearing_setting_updated', onDisappearingUpdated);
@@ -445,6 +446,7 @@ function App() {
         socket.off('user_typing', handleUserTyping);
         socket.off('friend_request_received', onFriendRequestReceived);
         socket.off('friend_request_accepted', onFriendRequestAccepted);
+        socket.off('friend_list_updated', onFriendRequestAccepted);
         socket.off('chat_error', onChatError);
         socket.off('message_deleted', onMessageDeleted);
         socket.off('disappearing_setting_updated', onDisappearingUpdated);
@@ -464,6 +466,33 @@ function App() {
       .then(r => r.ok && r.json())
       .then(d => d && setPendingIncomingCount((d.incoming || []).length))
       .catch(e => console.error(e));
+  };
+
+  const handleUnfriendContact = async (targetUsername) => {
+    if (!targetUsername || targetUsername === GEMINI_BOT_NAME) return;
+    if (!window.confirm(`Are you sure you want to unfriend @${targetUsername}?`)) return;
+    try {
+      const res = await fetch(getApiUrl('/api/friends/unfriend'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ targetUsername })
+      });
+      if (res.ok) {
+        handleRefreshFriends();
+        if (activeChat === targetUsername) {
+          setActiveChat('');
+          setMobileView('contacts');
+        }
+      } else {
+        const d = await res.json();
+        alert(d.error || 'Failed to unfriend user.');
+      }
+    } catch (e) {
+      alert('Error connecting to server.');
+    }
   };
 
   const handleInputChange = (e) => {
@@ -990,9 +1019,7 @@ function App() {
     : users;
 
   const filteredUsers = allContacts.filter(u => 
-    u.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (u.email && u.email.toLowerCase().includes(searchQuery.toLowerCase())) ||
-    (u.phone && u.phone.includes(searchQuery))
+    u.username.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const getChatPreview = (user) => {
@@ -1281,9 +1308,6 @@ function App() {
                       <span className="username-text">{u.username}</span>
                       {u.isAi && <span className="ai-badge">AI</span>}
                     </div>
-                    {(u.phone || u.email) && !u.isAi && (
-                      <span className="user-subdetail">{u.phone ? `📱 ${u.phone}` : `✉️ ${u.email}`}</span>
-                    )}
                     <span className="chat-preview">{getChatPreview(u)}</span>
                   </div>
                   {unreadCounts[u.username] > 0 && (
@@ -1335,15 +1359,27 @@ function App() {
                 {/* AI Toolbar & Security Badges & Disappearing Messages Setting */}
                 <div className="header-tools">
                   {!activeUser?.isAi && (
-                    <button 
-                      type="button" 
-                      className={`tool-btn disappearing-btn ${disappearingSettings[activeChat] ? 'active-timer' : ''}`}
-                      onClick={() => setIsDisappearingModalOpen(true)}
-                      title="Disappearing Messages Timer"
-                    >
-                      <Clock size={15} />
-                      <span>{disappearingSettings[activeChat] ? formatDuration(disappearingSettings[activeChat]) : 'Timer'}</span>
-                    </button>
+                    <>
+                      <button 
+                        type="button" 
+                        className={`tool-btn disappearing-btn ${disappearingSettings[activeChat] ? 'active-timer' : ''}`}
+                        onClick={() => setIsDisappearingModalOpen(true)}
+                        title="Disappearing Messages Timer"
+                      >
+                        <Clock size={15} />
+                        <span>{disappearingSettings[activeChat] ? formatDuration(disappearingSettings[activeChat]) : 'Timer'}</span>
+                      </button>
+
+                      <button 
+                        type="button" 
+                        className="tool-btn unfriend-header-btn" 
+                        onClick={() => handleUnfriendContact(activeChat)}
+                        title={`Unfriend @${activeChat}`}
+                      >
+                        <UserX size={15} />
+                        <span>Unfriend</span>
+                      </button>
+                    </>
                   )}
 
                   {extensions.gemini && currentChatMessages.length > 0 && (
@@ -1801,6 +1837,7 @@ function App() {
         token={token}
         currentUsername={username}
         onFriendAccepted={handleRefreshFriends}
+        onSelectChat={selectChat}
       />
 
       {/* Direct Camera Viewfinder Modal */}
